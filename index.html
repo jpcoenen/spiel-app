@@ -1095,7 +1095,11 @@ label.btn { cursor: pointer; position: relative; }
   function renderInfo() {
     const [cls, msg] = fairStatus(), today = berlinNow().date;
     const upd = DATA.updated ? `${DATA.updated.slice(6, 8)}.${DATA.updated.slice(4, 6)}.${DATA.updated.slice(0, 4)}` : "";
-    $("view").innerHTML = (STANDALONE ? `<div class="card"><h2>spielplan with GPS</h2><p>This is the copy of spielplan outside claude.ai, so your browser can share your location with the map. Your stars here stay in this browser. Ceiling photos, other people's spots and the shared note are in the <a href="${CLAUDE_PAGE}" target="_blank" rel="noopener">claude.ai version</a>.</p></div>` : "") + `
+    $("view").innerHTML = (STANDALONE
+      ? `<div class="card"><h2>spielplan with GPS</h2><p>This is the copy of spielplan outside claude.ai, so your browser can share your location with the map. Your stars here are kept in this browser.${CLAUDE_PAGE ? " Ceiling photos, other people's spots and the shared note are in the claude.ai version; this button takes your plan back there." : " Ceiling photos, other people's spots and the shared note are in the claude.ai version."}</p>
+          ${CLAUDE_PAGE ? `<a class="btn" style="width:100%" href="${esc(handoffUrl(CLAUDE_PAGE))}" target="_blank" rel="noopener">Back to claude.ai with my plan</a>` : ""}</div>`
+      : `<div class="card"><h2>GPS on the map</h2><p>claude.ai does not let apps use your location. The GPS version is the same app as an ordinary web page: your stars, priorities, notes and the GPS line-up go along.</p>
+          <a class="btn" style="width:100%" href="${esc(handoffUrl())}" target="_blank" rel="noopener">Open the GPS version with my plan</a></div>`) + `
       <div class="card"><span class="status ${cls}">${esc(msg)}</span>
         <table class="hours">${DAYS.map(d => `<tr class="${d[0] === today ? "today" : ""}"><td>${d[1]}</td><td>${d[2]}:00 – ${d[3]}:00</td></tr>`).join("")}</table>
         <p class="fine">Times are Essen local time. Business visitors can enter from 9:30 at the West, South and East fast lanes.</p></div>
@@ -2500,7 +2504,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     }
     if (!CEIL.db) {
       showSheet(html + (STANDALONE
-        ? `<p>This copy runs outside claude.ai for GPS, so it has no shared data. Ceiling photos, other people's spots and the shared note are in the <a href="${CLAUDE_PAGE}" target="_blank" rel="noopener">claude.ai version</a>.</p>`
+        ? `<p>This copy runs outside claude.ai for GPS, so it has no shared data. Ceiling photos, other people's spots and the shared note are in the claude.ai version${CLAUDE_PAGE ? `: <a href="${esc(handoffUrl(CLAUDE_PAGE))}" target="_blank" rel="noopener">open it with my plan</a>` : ""}.</p>`
         : `<p>This needs the shared data of this app, which is only available when you are signed in to Claude and the app is shared with you.</p>`));
       return;
     }
@@ -2789,7 +2793,11 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
   // Inside claude.ai the app runs in a frame that may not use your location. The same file on GitHub Pages is an
   // ordinary web page, where the browser asks for it as usual: the GPS button sends you there, plan and line-up included.
   const STANDALONE = /github\.io$/.test(location.hostname);
-  const GPS_PAGE = "https://jpcoenen.github.io/spiel-app/", CLAUDE_PAGE = "https://claude.ai/artifact/8BU2yY9jUojpK2MfHZHAqq";
+  // The claude.ai link is left out of the public copy (it opens the shared spots and note); that copy learns it from
+  // the hand-off link instead, so only people who came from claude.ai get it.
+  const GPS_PAGE = "https://jpcoenen.github.io/spiel-app/", HOME_PAGE = "";
+  let CLAUDE_PAGE = HOME_PAGE;
+  if (STANDALONE) try { CLAUDE_PAGE = localStorage.getItem(LS_KEY + "-home") || ""; } catch { CLAUDE_PAGE = ""; }
   // claude.ai may not hand location to the frame this app runs in; then the button goes away for good on this device
   // (checked again after a week, in case that changes)
   try { GPS.blocked = Date.now() - (+localStorage.getItem(LS_KEY + "-gpsblocked") || 0) < 7 * 864e5; } catch {}
@@ -2800,12 +2808,13 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     if (STANDALONE) document.querySelector("[data-gps]")?.remove();
     if (tab === "map" && $("mapwrap")) drawMarks();
   }
-  // the link to the GPS copy, carrying your plan and the GPS line-up points
-  function handoffUrl() {
+  // a link to the other copy (the GPS copy, or back to claude.ai) carrying your plan and the GPS line-up points;
+  // the whole plan, unticked stars included, so the newest change to each entry wins on the other side
+  function handoffUrl(to) {
     const pairs = [...GPS.pairs.values(), ...GPS.local].map(p => [p.map, p.x, p.y, +(+p.lat).toFixed(6), +(+p.lon).toFixed(6), p.acc, p.t]);
-    const bytes = new TextEncoder().encode(JSON.stringify({ v: 1, p: prune(plan), g: pairs, m: ui.map.id }));
+    const bytes = new TextEncoder().encode(JSON.stringify({ v: 1, p: plan, g: pairs, m: ui.map.id, r: STANDALONE ? undefined : CLAUDE_PAGE }));
     let bin = ""; for (const c of bytes) bin += String.fromCharCode(c);
-    return GPS_PAGE + "#handoff=" + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return (to || GPS_PAGE) + "#handoff=" + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   }
   function gpsElsewhere() {
     sheetOpen = { kind: "gps" };
@@ -2814,18 +2823,21 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       <p>Your stars, priorities and notes and the GPS line-up come along. Ceiling photos, other people's spots and the shared note stay here in claude.ai, and stars you change over there do not come back here.</p>
       <a class="btn primary" style="width:100%" href="${esc(handoffUrl())}" target="_blank" rel="noopener">Open spielplan with GPS</a>`);
   }
-  // arriving on the GPS copy from that link
+  // a hand-off link opened on a page that is already open only changes the hash
+  window.addEventListener("hashchange", () => { if (location.hash.startsWith("#handoff=") && DATA) { handoffIn(location.hash.slice(9)); render(false); } });
+  // arriving from that link
   function handoffIn(code) {
     try {
       const bin = atob(code.replace(/-/g, "+").replace(/_/g, "/")), d = JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0))));
-      plan = mergePlans(plan, { ex: d.p?.ex || {}, pr: d.p?.pr || {} }); saveLocal(); updateBadge();
+      plan = mergePlans(plan, { ex: d.p?.ex || {}, pr: d.p?.pr || {} }); scheduleWrite(); updateBadge();
+      if (STANDALONE && /^https:\/\/claude\.ai\//.test(d.r || "")) { CLAUDE_PAGE = d.r; try { localStorage.setItem(LS_KEY + "-home", d.r); } catch {} }
       const have = new Set(GPS.local.map(p => p.t + ":" + p.lat));
       for (const [map, x, y, lat, lon, acc, t] of d.g || []) if (!have.has(t + ":" + lat)) GPS.local.push({ map, x, y, lat, lon, acc, t });
       try { localStorage.setItem(LS_KEY + "-gpsfix", JSON.stringify(GPS.local.slice(-60))); localStorage.setItem(INTRO_KEY, "1"); } catch {}
       introSeen = true;
       if (d.m && d.m !== "0") ui.map.id = d.m;
       mapsReady.then(gpsFit);
-      setTimeout(() => toast("Your plan and the GPS line-up are here. Tap the arrow button on the map to turn on GPS.", 7000), 600);
+      setTimeout(() => toast(STANDALONE ? "Your plan and the GPS line-up are here. Tap the arrow button on the map to turn on GPS." : "Your plan from the GPS version is here.", 7000), 600);
     } catch { setTimeout(() => toast("This link could not be read."), 600); }
     history.replaceState(null, "", location.pathname);
   }
