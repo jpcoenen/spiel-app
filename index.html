@@ -275,6 +275,16 @@ body.is-map { overflow: hidden; }
   font: 700 0.56rem/1 var(--font-body); letter-spacing: 0.02em; z-index: 0; opacity: 0.85; transition: opacity 0.2s;
 }
 .mapwrap.doorsdim .pin.door { opacity: 0.5; }
+.pin.glabel {
+  display: none; flex-direction: column; align-items: flex-start; gap: 1px; height: auto; min-width: 0; max-width: 176px;
+  padding: 3px 6px; border-radius: 6px; border-width: 1px; border-color: var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--ink); font: 600 0.68rem/1.3 var(--font-body); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); transform: translate(14px, -6px); z-index: 1;
+}
+.mapwrap.names .pin.glabel { display: flex; }
+.pin.glabel span { display: block; max-width: 164px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pin.glabel b.prio { margin-right: 4px; padding: 0 4px; border-width: 1px; font-size: 0.56rem; vertical-align: 1px; }
+.pin.glabel .v { opacity: 0.55; text-decoration: line-through; }
+.pin.glabel .more { color: var(--muted); font-weight: 500; }
 .mapwrap.doorsoff .pin.door { opacity: 0; }
 .mk-from { fill: color-mix(in srgb, var(--accent) 30%, transparent); stroke: var(--accent); stroke-width: 4; }
 @media (prefers-reduced-motion: no-preference) { .mk-from { animation: fadefrom 2.2s ease-in forwards; } @keyframes fadefrom { 70% { opacity: 1; } to { opacity: 0; } } }
@@ -1501,7 +1511,7 @@ label.btn { cursor: pointer; position: relative; }
       for (const s of it.stands) {
         const loc = standLoc.get(s[2]); if (!loc) continue;
         if (!seen.has(loc.map)) { seen.add(loc.map); const c = halls[loc.map] ||= { open: 0, done: 0 }; it.st.v ? c.done++ : c.open++; }
-        if (mapId === FAIR || loc.map === mapId) { const c = booths[s[2]] ||= { open: 0, done: 0 }; it.st.v ? c.done++ : c.open++; }
+        if (mapId === FAIR || loc.map === mapId) { const c = booths[s[2]] ||= { open: 0, done: 0, items: [] }; it.st.v ? c.done++ : c.open++; c.items.push(it); }
       }
     }
     return { halls, booths };
@@ -1697,6 +1707,7 @@ label.btn { cursor: pointer; position: relative; }
     // door labels: faint while the plan is small, gone when it is too small to read
     const ps = MV.sc * (inFair() ? 0.75 : 1);
     wrap.classList.toggle("doorsoff", ps < 0.13); wrap.classList.toggle("doorsdim", ps < 0.3);
+    wrap.classList.toggle("names", ps >= 0.45); // starred names next to their booths
     for (const p of MV.pins) p.el.style.translate = `${MV.tx + p.x * MV.sc}px ${MV.ty + p.y * MV.sc}px`;
     const X = x => MV.tx + x * MV.sc, Y = y => MV.ty + y * MV.sc;
     const rl = $("routeline");
@@ -1796,6 +1807,9 @@ label.btn { cursor: pointer; position: relative; }
         shapes += shapeOn(loc.map, el, 2, c.open ? "mk-star" : "mk-done");
         // corner pin, so the booth's own name on the plan stays readable
         addPin(p[0], p[1], (c.open ? "" : "done") + near, (c.open ? STAR : TICK) + (c.open + c.done > 1 ? c.open + c.done : ""));
+        // zoomed in far: what you starred here, by name, high priority first (games before exhibitors)
+        const its = [...c.items].sort((a, b) => !!a.st.v - !!b.st.v || (b.kind === "pr") - (a.kind === "pr") || (PRIO_RANK[b.st.p] || 0) - (PRIO_RANK[a.st.p] || 0) || a.name.localeCompare(b.name));
+        addPin(p[0], p[1], "glabel", its.slice(0, 3).map(it => `<span class="${it.st.v ? "v" : ""}">${PRIO[it.st.p] ? `<b class="prio ${it.st.p}">${it.st.p.toUpperCase()}</b>` : ""}${esc(it.name)}</span>`).join("") + (its.length > 3 ? `<span class="more">+${its.length - 3} more</span>` : ""));
       }
       const f = MV.focus && standLoc.get(MV.focus), fp = f && onView(f.map, f.el[2] + f.el[4] / 2, f.el[3]);
       if (fp) {
