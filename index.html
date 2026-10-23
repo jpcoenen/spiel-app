@@ -223,6 +223,9 @@ nav.tabs .badge {
 .sheet .stands { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .sheet .stands a { text-decoration: none; }
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.sharerow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: -4px 0 12px; }
+.sharerow .btn svg { width: 16px; height: 16px; }
+.sharebox { flex: 1 1 200px; min-width: 0; font: 0.8rem var(--font-body); padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
 .btn {
   display: flex; align-items: center; justify-content: center; gap: 8px; padding: 11px 12px; border-radius: 12px;
   border: 1.5px solid var(--line); background: var(--surface); font-weight: 700; text-decoration: none; color: var(--ink);
@@ -1134,6 +1137,74 @@ label.btn { cursor: pointer; position: relative; }
       <p class="planfoot"><button class="linkbtn" data-open-note>Waar heeft Mick zijn sleutel opgeborgen? En andere notities</button></p>`;
   }
 
+  // ---------- Back button and links ----------
+  // Every tab and every open game, exhibitor, booth or panel is a step in the browser history, so the back button
+  // (or the phone's back gesture) closes what is open or returns to the previous tab instead of leaving the app.
+  // Games, exhibitors and booths have their own address: #game/<key>, #exhibitor/<id>, #booth/<stand>.
+  let navReady = false, navLock = false; // navLock: while a history step is being applied, it must not add one
+  const NAV_HASH = { pr: "#game/", ex: "#exhibitor/", booth: "#booth/" };
+  function navPush() {
+    if (navLock) return;
+    const prev = history.state?.app ? history.state : null;
+    const sheet = sheetOpen ? { kind: sheetOpen.kind, id: sheetOpen.id ?? null } : null;
+    const st = { app: 1, tab, sheet, depth: sheet ? (prev?.sheet ? prev.depth : 0) + 1 : 0 };
+    if (prev && prev.tab === st.tab && JSON.stringify(prev.sheet) === JSON.stringify(sheet)) return;
+    const hash = sheet && NAV_HASH[sheet.kind] ? NAV_HASH[sheet.kind] + encodeURIComponent(sheet.id) : "#" + tab;
+    try { history[navReady ? "pushState" : "replaceState"](st, "", location.pathname + location.search + hash); } catch {}
+  }
+  // an address like #game/<key>: what it opens
+  function navParse(h) {
+    const m = /^#(game|exhibitor|booth)\/(.+)$/.exec(h || ""); if (!m) return null;
+    let id; try { id = decodeURIComponent(m[2]); } catch { return null; }
+    return { kind: { game: "pr", exhibitor: "ex", booth: "booth" }[m[1]], id };
+  }
+  function navOpen(s) {
+    if (!s || sheetOpen?.kind === s.kind && sheetOpen.id === s.id) return;
+    if (s.kind === "pr" ? prByKey.has(s.id) : s.kind === "ex" ? exById.has(s.id) : false) return openSheet(s.kind, s.id);
+    if (s.kind === "booth") return mapsReady.then(() => { if (MAPS && standLoc.has(s.id)) openBooth(s.id); });
+    if (s.kind === "ceil") return openCeil();
+    if (s.kind === "reflist") return openRefList();
+    if (s.kind === "ref") return openRef(s.id);
+    if (s.kind === "note") return openNote();
+    closeSheet(true, true); // the welcome, GPS and import panels are not opened again by going forward
+  }
+  // the app's first history entry is a guard: back on the first screen asks once before leaving the app
+  let guardT = 0;
+  function navGuard() {
+    try { history.replaceState({ app: 1, guard: 1 }, "", location.href); } catch {}
+  }
+  window.addEventListener("popstate", e => {
+    if (!DATA) return;
+    if (e.state?.guard) {
+      if (Date.now() - guardT < 3000) { history.back(); return; }
+      guardT = Date.now();
+      toast("Press back again to leave spielplan.", 3000);
+      const st = { app: 1, tab, sheet: null, depth: 0 };
+      if (sheetOpen) closeSheet(true, true);
+      try { history.pushState(st, "", location.pathname + location.search + "#" + tab); } catch {}
+      return;
+    }
+    const st = e.state?.app ? e.state : { tab, sheet: navParse(location.hash) }; // an address typed or pasted by hand
+    navLock = true;
+    try {
+      if (!st.sheet && sheetOpen) closeSheet(true, true);
+      if (st.tab && st.tab !== tab) setTab(st.tab, true); else if (!st.sheet) render(false);
+      if (st.sheet) navOpen(st.sheet);
+    } finally { navLock = false; }
+  });
+  // a link to a game or exhibitor: shared from the phone's share menu, or copied
+  async function shareItem(kind, id) {
+    const base = STANDALONE ? GPS_PAGE : CLAUDE_PAGE, name = kind === "pr" ? prByKey.get(id)?.t : exById.get(id)?.n;
+    const url = base + NAV_HASH[kind] + encodeURIComponent(id);
+    if (navigator.share) {
+      try { await navigator.share({ title: name, text: `${name} at SPIEL Essen 2026`, url }); return; }
+      catch (e) { if (e?.name === "AbortError") return; }
+    }
+    try { await navigator.clipboard.writeText(url); toast("Link copied."); return; } catch {}
+    const box = $("sharebox"); // no share menu and no clipboard here: show the link to copy by hand
+    if (box) { box.hidden = false; box.value = url; box.focus(); box.select(); toast("Copy the link from the box."); }
+  }
+
   // ---------- Detail sheet ----------
   let sheetOpen = null;
   function openSheet(kind, id) {
@@ -1145,7 +1216,9 @@ label.btn { cursor: pointer; position: relative; }
     const actions = `<div class="actions">
       <button class="btn${st.s ? " on-star" : ""}" data-sheet-star>${STAR}${st.s ? "Starred" : "Star"}</button>
       <button class="btn${st.v ? " on-done" : ""}" data-sheet-visit>${TICK}${st.v ? "Visited" : "Mark visited"}</button></div>
-      <div class="prioset" role="group" aria-label="Priority"><span>Priority</span>${Object.entries(PRIO).map(([k, l]) => `<button data-prio="${k}" aria-pressed="${!!st.s && st.p === k}">${l}</button>`).join("")}</div>`;
+      <div class="prioset" role="group" aria-label="Priority"><span>Priority</span>${Object.entries(PRIO).map(([k, l]) => `<button data-prio="${k}" aria-pressed="${!!st.s && st.p === k}">${l}</button>`).join("")}</div>
+      <p class="sharerow"><button class="btn sm" data-share><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>Share link</button>
+        <input id="sharebox" class="sharebox" readonly hidden aria-label="Link to this ${kind === "pr" ? "game" : "exhibitor"}"></p>`;
     if (kind === "ex") {
       const e = exById.get(id), games = prByEx.get(id) || [];
       html += `<h2 id="sheet-title">${esc(e.n)}</h2><p class="meta">${esc(e.l)}</p>${standLinks}${actions}`;
@@ -1187,6 +1260,7 @@ label.btn { cursor: pointer; position: relative; }
     sh.hidden = false; $("scrim").hidden = false;
     sh.scrollTop = refresh ? top : 0;
     document.body.style.overflow = "hidden";
+    navPush();
   }
   // A booth tapped on the map: everything listed at that stand
   function openBooth(sid) {
@@ -1211,8 +1285,11 @@ label.btn { cursor: pointer; position: relative; }
     if (!at.ex.length && !at.pr.length) html += `<p class="fine">No exhibitors or new games are listed for this booth.</p>`;
     showSheet(html);
   }
-  function closeSheet(noRender) {
+  function closeSheet(noRender, fromNav) {
     if (!sheetOpen) return;
+    // closed by hand (×, Close, the backdrop, a drag or Escape): leave the history steps of the open panels too;
+    // closed on the way to somewhere else (noRender), the panel stays in history so back returns to it
+    if (!fromNav && noRender !== true && !navLock && history.state?.app && history.state.depth > 0) { try { history.go(-history.state.depth); } catch {} }
     if (sheetOpen.kind === "intro") introDone();
     sheetOpen = null;
     $("sheet").hidden = true; $("scrim").hidden = true;
@@ -1288,6 +1365,7 @@ label.btn { cursor: pointer; position: relative; }
     if (ceilClick(e)) { e.stopPropagation(); return; }
     if (!sheetOpen) return;
     const { kind, id } = sheetOpen;
+    if (e.target.closest("[data-share]")) return shareItem(kind, id);
     if (e.target.closest("[data-sheet-star]")) { setEntry(kind, id, { s: !entry(kind, id).s }); return openSheet(kind, id); }
     if (e.target.closest("[data-sheet-visit]")) { setEntry(kind, id, { v: !entry(kind, id).v }); return openSheet(kind, id); }
     const pb = e.target.closest("[data-prio]");
@@ -1341,6 +1419,7 @@ label.btn { cursor: pointer; position: relative; }
     if (t !== "import") try { localStorage.setItem(LS_KEY + "-tab", t); } catch {} // the import page opens only from its own link
     window.scrollTo(0, 0); document.body.scrollTop = 0;
     render(true);
+    if (!fromHash) navPush();
   }
   document.querySelector("nav.tabs").addEventListener("click", e => {
     const b = e.target.closest("button[data-tab]"); if (b) setTab(b.dataset.tab);
@@ -3169,7 +3248,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
   let prefsRef = null, prefsSeenResolve;
   const prefsSeen = new Promise(r => { prefsSeenResolve = r; });
   async function maybeIntro(start) {
-    if (introSeen || start === "notepad" || start === "import" || !$("ogcard").hidden) return;
+    if (introSeen || start === "notepad" || start === "import" || start === "link" || !$("ogcard").hidden) return;
     const elsewhere = await Promise.race([prefsSeen, new Promise(r => setTimeout(() => r(false), 2500))]);
     if (elsewhere) { try { localStorage.setItem(INTRO_KEY, "1"); } catch {} return; }
     if (sheetOpen) return; // the visitor is already busy with something
@@ -3228,16 +3307,24 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       if (at[at.length - 1] !== x) at.push(x);
     }
     if (location.hash.startsWith("#handoff=")) handoffIn(location.hash.slice(9));
-    let start = location.hash.slice(1) || (STANDALONE && ui.map.id !== "0" ? "map" : "");
+    const deep = navParse(location.hash); // a link to a game, exhibitor or booth
+    if (deep?.kind === "booth") mapsReady.then(() => { const l = standLoc.get(deep.id); if (l) ui.map.id = l.map; });
+    let start = deep ? { pr: "games", ex: "exhibitors", booth: "map" }[deep.kind] : location.hash.slice(1) || (STANDALONE && ui.map.id !== "0" ? "map" : "");
     if (!start) try { start = localStorage.getItem(LS_KEY + "-tab") || ""; } catch {}
     const cam = camRestart();
     if (cam?.tab === "map") { // back from a camera that cost the page its life: same spot on the map, and say why
       ui.map.id = cam.hall; MV.place = cam.place; MV.restore = cam; start = "map";
       setTimeout(() => toast(`The phone closed the app while the camera was open, so the photo did not arrive. You are back where you were.${cam.kind === "cam-ref" ? " If it keeps happening: take the photo with your camera app, then add it with “From gallery”." : ""}`, 12000), 600);
     }
+    navGuard(); navReady = true;
     if (start === "notepad") { setTab("info"); openNote(); } // the notepad's own link
-    else setTab(start || "games");
-    maybeIntro(start);
+    else {
+      setTab(start || "games"); // after the guard: the tab, so back from a linked game lands on its list
+      navReady = true;
+      if (deep) navOpen(deep);
+    }
+    navReady = true;
+    maybeIntro(deep ? "link" : start);
     netChanged(); // header note, and quietly saves the hall plans and your covers for offline use
     $("og-bgg").textContent = d.pr.filter(p => p.bgg && p.src !== "bgg").length.toLocaleString("en");
     $("og-extra").textContent = d.pr.filter(p => p.src === "bgg").length.toLocaleString("en");
