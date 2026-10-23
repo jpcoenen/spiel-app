@@ -61,6 +61,10 @@ body {
   padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom, 0px));
   -webkit-tap-highlight-color: transparent;
 }
+/* The GPS copy is a page of its own: there only the content scrolls, not the page, so a browser toolbar at the
+   bottom of the screen (Firefox) stays put instead of sliding in over the tab bar */
+html.shell { height: 100%; overflow: hidden; }
+html.shell body { height: 100vh; height: 100dvh; overflow-y: auto; overscroll-behavior-y: contain; }
 body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; }
@@ -1015,7 +1019,7 @@ label.btn { cursor: pointer; position: relative; }
         const from = shown; shown += PAGE;
         $("list").insertAdjacentHTML("beforeend", currentItems.slice(from, shown).map(rowFn).join(""));
         if (shown >= currentItems.length) observer.disconnect();
-      }, { rootMargin: "600px" });
+      }, { rootMargin: "600px", root: STANDALONE ? document.body : null }); // the GPS copy scrolls inside the body
       observer.observe($("sentinel"));
     }
   }
@@ -1321,7 +1325,7 @@ label.btn { cursor: pointer; position: relative; }
     if (t === "games" || t === "exhibitors") lastList = t;
     document.querySelectorAll("nav.tabs button").forEach(b => b.dataset.tab === t ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current"));
     if (t !== "import") try { localStorage.setItem(LS_KEY + "-tab", t); } catch {} // the import page opens only from its own link
-    window.scrollTo(0, 0);
+    window.scrollTo(0, 0); document.body.scrollTop = 0;
     render(true);
   }
   document.querySelector("nav.tabs").addEventListener("click", e => {
@@ -2793,6 +2797,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
   // Inside claude.ai the app runs in a frame that may not use your location. The same file on GitHub Pages is an
   // ordinary web page, where the browser asks for it as usual: the GPS button sends you there, plan and line-up included.
   const STANDALONE = /github\.io$/.test(location.hostname);
+  if (STANDALONE) document.documentElement.classList.add("shell");
   // The claude.ai link is left out of the public copy (it opens the shared spots and note); that copy learns it from
   // the hand-off link instead, so only people who came from claude.ai get it.
   const GPS_PAGE = "https://jpcoenen.github.io/spiel-app/", HOME_PAGE = "";
