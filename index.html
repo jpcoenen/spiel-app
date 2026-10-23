@@ -992,6 +992,9 @@ label.btn { cursor: pointer; position: relative; }
   // starredOnly: My plan and the map, which only ever show starred things, so "all" and "starred" are the same choice
   const starOptions = (sel, starredOnly) => (starredOnly ? STAR_FILTERS.filter(f => f[0] !== "s").map(([v, l]) => [v, v ? l : "★ All priorities"]) : STAR_FILTERS)
     .map(([v, l]) => `<option value="${v}"${v === (starredOnly && sel === "s" ? "" : sel) ? " selected" : ""}>${l}</option>`).join("");
+  // starred first, high to low priority (starred without one after low), the rest in their own order
+  const starRank = (kind, id) => { const st = entry(kind, id); return st.s ? PRIO_RANK[st.p] || 0.5 : 0; };
+  const byStars = (kind, list, key) => list.map((x, i) => [x, i]).sort((a, b) => starRank(kind, key(b[0])) - starRank(kind, key(a[0])) || a[1] - b[1]).map(a => a[0]);
   const starMatch = (st, f) => !f || !!st.s && (f === "s" || (f === "hm" ? st.p === "h" || st.p === "m" : f === "n" ? !PRIO[st.p] : st.p === f));
   const prioPill = st => st.s && PRIO[st.p] ? `<span class="prio ${st.p}">${PRIO[st.p]}</span>` : "";
   const DIE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.5" cy="8.5" r="1.3" fill="currentColor"/><circle cx="15.5" cy="15.5" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/></svg>';
@@ -1139,7 +1142,7 @@ label.btn { cursor: pointer; position: relative; }
       if (e.k.length) html += `<div class="tags">${e.k.map(k => `<span class="tag">${esc(k)}</span>`).join("")}</div>`;
       if (e.d) html += `<p class="desc">${esc(e.d)}</p>`;
       if (e.w) html += `<p><a href="${esc(/^https?:/i.test(e.w) ? e.w : "https://" + e.w)}" target="_blank" rel="noopener">${esc(e.w.replace(/^https?:\/\//, "").replace(/\/$/, ""))}</a></p>`;
-      if (games.length) html += `<h3>New games here (${games.length})</h3><div class="list">${games.map(gameRow).join("")}</div>`;
+      if (games.length) html += `<h3>New games here (${games.length})</h3><div class="list">${byStars("pr", games, p => p.k).map(gameRow).join("")}</div>`;
     } else {
       const p = prByKey.get(id), ex = exById.get(p.e);
       html += `<div class="gamehead">${coverHtml(p, 112)}<div><h2 id="sheet-title">${esc(p.t)}</h2><p class="meta">${esc(p.p)}</p></div></div>${standLinks}${actions}`;
@@ -1183,15 +1186,16 @@ label.btn { cursor: pointer; position: relative; }
     const hall = [...at.ex, ...at.pr][0]?.s.find(s => s[2] === sid)?.[0] || MAPS.maps[loc.map].n;
     let html = `<div class="grab"></div><h2 id="sheet-title">Booth ${esc(loc.el[1])}</h2>
       <p class="meta">${esc(hallLabel(hall))} · <a href="${MAP_URL}${encodeURIComponent(sid)}" target="_blank" rel="noopener">Official map</a></p>`;
-    if (at.ex.length) html += `<h3>${at.ex.length === 1 ? "Exhibitor" : `Exhibitors (${at.ex.length})`}</h3><div class="list">${at.ex.map(exRow).join("")}</div>`;
+    if (at.ex.length) html += `<h3>${at.ex.length === 1 ? "Exhibitor" : `Exhibitors (${at.ex.length})`}</h3><div class="list">${byStars("ex", at.ex, e => e.i).map(exRow).join("")}</div>`;
     const mm = mapMatches();
     if (at.pr.length) {
       let list = at.pr, note = "";
-      if (mm?.src === "games") {
+      if (mm?.src === "games") { // games matching the list filter come next after your starred ones
         const hit = new Set(filteredGames().map(p => p.k)), n = list.filter(p => hit.has(p.k)).length;
         list = [...list].sort((a, b) => hit.has(b.k) - hit.has(a.k));
         if (n) note = ` · ${n} match your filter`;
       }
+      list = byStars("pr", list, p => p.k);
       html += `<h3>New games here (${at.pr.length})${note}</h3><div class="list">${list.map(gameRow).join("")}</div>`;
     }
     if (!at.ex.length && !at.pr.length) html += `<p class="fine">No exhibitors or new games are listed for this booth.</p>`;
