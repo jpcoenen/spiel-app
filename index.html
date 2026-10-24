@@ -234,6 +234,19 @@ nav.tabs .badge {
 .sheet .stands { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .sheet .stands a { text-decoration: none; }
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+.playedset { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: -4px 0 12px; }
+.playedset .btn svg { width: 16px; height: 16px; }
+.rate { display: inline-flex; gap: 2px; }
+.rate button { border: 0; background: none; padding: 6px 3px; color: var(--line); min-width: 32px; min-height: 32px; }
+.rate button svg { width: 24px; height: 24px; }
+.rate button[aria-pressed="true"] { color: var(--star); }
+.ratestars { color: var(--star); letter-spacing: 1px; }
+.playedtag { display: inline-flex; align-items: center; gap: 3px; font-size: 0.75rem; font-weight: 700; color: var(--done); }
+.playedtag svg { width: 12px; height: 12px; }
+.addown { margin: 0 0 10px; }
+.row .sub.thought { white-space: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; color: var(--ink); }
+.field { display: grid; gap: 4px; margin-bottom: 10px; font-size: 0.85rem; font-weight: 700; }
+.field input { font: 400 1rem var(--font-body); padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); }
 .sharerow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: -4px 0 12px; }
 .sharerow .btn svg { width: 16px; height: 16px; }
 .sharebox { flex: 1 1 200px; min-width: 0; font: 0.8rem var(--font-body); padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); }
@@ -809,15 +822,21 @@ label.btn { cursor: pointer; position: relative; }
   let shown = PAGE, currentItems = [], observer = null;
 
   // plan = { ex: {id: {s, v, n, t}}, pr: {key: {...}} }  s=starred v=visited n=note t=last change
-  let plan = { ex: {}, pr: {} };
-  try { const raw = localStorage.getItem(LS_KEY); if (raw) plan = Object.assign({ ex: {}, pr: {} }, JSON.parse(raw)); } catch {}
+  // plan: { ex: {id: entry}, pr: {key: entry}, cg: {id: your own game} }; entry: s starred, v visited, n note, p priority,
+  // pd played (time), r your rating 1-5, t last change. Own games: { t: name, b: BGG id, at: added/changed, x: removed }
+  let plan = { ex: {}, pr: {}, cg: {} };
+  try { const raw = localStorage.getItem(LS_KEY); if (raw) plan = Object.assign({ ex: {}, pr: {}, cg: {} }, JSON.parse(raw)); } catch {}
   const entry = (kind, id) => plan[kind][id] || {};
   let syncState = "local"; // local | account | account-error
 
   // ---------- Account sync (db capability) ----------
   let dbRef = null, writing = false, dirty = false, writeTimer = null;
   function mergePlans(a, b) {
-    const out = { ex: {}, pr: {} };
+    const out = { ex: {}, pr: {}, cg: {} };
+    for (const id of new Set([...Object.keys(a.cg || {}), ...Object.keys(b.cg || {})])) { // own games: the newer change wins
+      const x = a.cg?.[id], y = b.cg?.[id];
+      out.cg[id] = !x ? y : !y ? x : ((y.at || 0) > (x.at || 0) ? y : x);
+    }
     for (const k of ["ex", "pr"]) {
       const keys = new Set([...Object.keys(a[k] || {}), ...Object.keys(b[k] || {})]);
       for (const id of keys) {
@@ -849,8 +868,8 @@ label.btn { cursor: pointer; position: relative; }
   }
   // drop entries that carry nothing any more, so the document stays small
   function prune(p) {
-    const out = { ex: {}, pr: {} };
-    for (const k of ["ex", "pr"]) for (const [id, e] of Object.entries(p[k])) if (e.s || e.v || e.n) out[k][id] = e;
+    const out = { ex: {}, pr: {}, cg: { ...(p.cg || {}) } }; // removed own games stay as a marker, so other devices remove them too
+    for (const k of ["ex", "pr"]) for (const [id, e] of Object.entries(p[k])) if (e.s || e.v || e.n || e.pd || e.r) out[k][id] = e;
     return out;
   }
   (async () => {
@@ -869,11 +888,11 @@ label.btn { cursor: pointer; position: relative; }
         if (snap.metadata.hasPendingWrites) return;
         const remote = snap.exists ? snap.data() : null;
         const before = JSON.stringify(prune(plan));
-        if (remote) plan = mergePlans(plan, { ex: remote.ex || {}, pr: remote.pr || {} });
+        if (remote) { plan = mergePlans(plan, { ex: remote.ex || {}, pr: remote.pr || {}, cg: remote.cg || {} }); ownGames(); }
         syncState = "account";
         saveLocal();
         const merged = JSON.stringify(prune(plan));
-        if (!remote || merged !== JSON.stringify(prune({ ex: remote.ex || {}, pr: remote.pr || {} }))) { dirty = true; flush(); }
+        if (!remote || merged !== JSON.stringify(prune({ ex: remote.ex || {}, pr: remote.pr || {}, cg: remote.cg || {} }))) { dirty = true; flush(); }
         if (merged !== before && DATA) render(false); else if (tab === "plan") renderSync();
         updateBadge();
       }, () => { syncState = "account-error"; if (tab === "plan") renderSync(); });
@@ -917,9 +936,11 @@ label.btn { cursor: pointer; position: relative; }
         <select id="f-star" aria-label="Starred and priority">${starOptions(ui.prio)}</select>`;
     } else if (tab === "plan") {
       const halls = planGroups().map(g => g.hall);
-      f.innerHTML = `<select id="f-star" aria-label="Priority">${starOptions(ui.prio, true)}</select>` +
-        `<button class="chip" id="f-hide" aria-pressed="${ui.plan.hideDone}">Hide visited</button>` +
-        halls.map(h => `<button class="chip" data-hall="${esc(h)}" aria-pressed="${ui.plan.hall === h}">${esc(hallShort(h))}</button>`).join("");
+      const np = playedItems().length;
+      f.innerHTML = `<button class="chip" id="f-played" aria-pressed="${!!ui.plan.played}">Played${np ? `<span class="cnt">${np}</span>` : ""}</button>` + (ui.plan.played ? "" :
+        `<select id="f-star" aria-label="Priority">${starOptions(ui.prio, true)}</select>` +
+        `<button class="chip" id="f-hide" aria-pressed="${ui.plan.hideDone}">Hide visited</button>`) + (ui.plan.played ? "" :
+        halls.map(h => `<button class="chip" data-hall="${esc(h)}" aria-pressed="${ui.plan.hall === h}">${esc(hallShort(h))}</button>`).join(""));
     } else if (tab === "map" && MAPS) {
       const mm = mapMatches();
       f.innerHTML = `<select id="f-star" aria-label="Which starred booths to show">${starOptions(ui.prio, true)}</select>` + MAPS.order.map(id => `<button class="chip" data-map="${id}" aria-pressed="${ui.map.id === id}">${esc(MAPS.maps[id].n)}${mm?.maps[id] ? `<span class="cnt" aria-label="${mm.maps[id]} matches">${mm.maps[id]}</span>` : ""}</button>`).join("");
@@ -946,6 +967,7 @@ label.btn { cursor: pointer; position: relative; }
   $("filters").addEventListener("click", e => {
     const b = e.target.closest("button"); if (!b) return;
     if (b.id === "f-hide") ui.plan.hideDone = !ui.plan.hideDone;
+    else if (b.id === "f-played") ui.plan.played = !ui.plan.played;
     else if (b.dataset.hall != null) ui.plan.hall = ui.plan.hall === b.dataset.hall ? "" : b.dataset.hall;
     else if (b.dataset.map != null) { if (b.dataset.map === "0" && isPlan()) markCameFrom(MV.id); ui.map.id = b.dataset.map; MV.focus = null; MV.hall = null; }
     else return;
@@ -1030,7 +1052,7 @@ label.btn { cursor: pointer; position: relative; }
     const bits = [p.p, p.pl && p.pl + " pl.", p.tm && p.tm.replace(" minutes", " min")].filter(Boolean).join(" · ");
     return `<div class="row game${st.v ? " visited" : ""}" data-kind="pr" data-id="${esc(p.k)}" role="button" tabindex="0">
       ${coverHtml(p, 64)}
-      <div class="main"><div class="name">${prioPill(st)}${esc(p.t)}</div><div class="sub">${esc(bits)}</div><div class="chipline">${standChip(p.s[0], p.s.length - 1)}${p.bgg ? `<span class="thumbs" title="Thumbs up on BoardGameGeek">${THUMB}${p.bgg.th.toLocaleString("en")}</span>` : ""}${p.bgg?.demo ? `<span class="tag">Demo only</span>` : ""}</div></div>
+      <div class="main"><div class="name">${prioPill(st)}${esc(p.t)}</div><div class="sub">${esc(bits)}</div><div class="chipline">${standChip(p.s[0], p.s.length - 1)}${p.bgg ? `<span class="thumbs" title="Thumbs up on BoardGameGeek">${THUMB}${p.bgg.th.toLocaleString("en")}</span>` : ""}${p.bgg?.demo ? `<span class="tag">Demo only</span>` : ""}${st.pd || st.r ? `<span class="playedtag">${TICK}${st.r ? starsText(st.r).replace(/☆/g, "") : "played"}</span>` : ""}</div></div>
       <button class="star" data-star aria-pressed="${!!st.s}" aria-label="Star ${esc(p.t)}">${STAR}</button>
     </div>`;
   }
@@ -1049,6 +1071,66 @@ label.btn { cursor: pointer; position: relative; }
       }, { rootMargin: "600px", root: STANDALONE ? document.body : null }); // the GPS copy scrolls inside the body
       observer.observe($("sentinel"));
     }
+  }
+
+  // ---------- Played, and your own games ----------
+  // Games on neither list (played at a stand, brought by a friend) are kept in your plan ("cg") and synced with it.
+  // They are listed among the games as games without a booth, so search, stars, notes, played and rating all work.
+  const OWN = "c:";
+  function ownGames() {
+    if (!DATA) return;
+    let changed = false;
+    for (const [id, g] of Object.entries(plan.cg || {})) {
+      const k = OWN + id, have = prByKey.get(k);
+      if (g.x) { if (have) { DATA.pr.splice(DATA.pr.indexOf(have), 1); prByKey.delete(k); changed = true; } continue; }
+      if (have && have.t === g.t && have.bggId === (g.b || null)) continue;
+      const p = have || { k, e: null, p: "Your own entry", a: "", pl: "", ag: "", tm: "", pc: "", rd: "", m: "", g: [], d: "", s: [], c: null, src: "own" };
+      Object.assign(p, { t: g.t, o: g.t.toUpperCase(), bggId: g.b || null, _q: norm(g.t + " your own") });
+      if (!have) { DATA.pr.push(p); prByKey.set(k, p); }
+      changed = true;
+    }
+    if (changed) DATA.pr.sort((a, b) => a.o.localeCompare(b.o, "en", { numeric: true }));
+  }
+  const dayLabel = t => new Date(t).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+  const starsText = r => r ? "★".repeat(r) + "☆".repeat(5 - r) : "";
+  const playedItems = () => Object.entries(plan.pr).filter(([k, e]) => (e.pd || e.r) && prByKey.has(k))
+    .map(([k, e]) => ({ p: prByKey.get(k), st: e })).sort((a, b) => (b.st.pd || 0) - (a.st.pd || 0));
+  function renderPlayed() {
+    const items = playedItems();
+    let html = `<div class="planbar"><div><strong>${items.length} played</strong><div class="sync" id="sync"></div></div><button class="btn sm" data-addgame>+ Add a game</button></div>`;
+    html += items.length ? `<div class="list">` + items.map(({ p, st }) => `<div class="row game" data-kind="pr" data-id="${esc(p.k)}" role="button" tabindex="0">
+        ${coverHtml(p, 44)}<div class="main"><div class="name">${esc(p.t)}</div>
+        <div class="sub">${st.r ? `<span class="ratestars" aria-label="${st.r} of 5">${starsText(st.r)}</span> · ` : ""}${st.pd ? "played " + dayLabel(st.pd) : "rated"}${p.src === "own" ? " · your own entry" : ""}</div>
+        ${st.n ? `<div class="sub thought">${esc(st.n)}</div>` : ""}</div></div>`).join("") + `</div>`
+      : `<div class="card"><p>Open a game, tap “Mark played”, give it stars and write what you thought of it in the note. A game that is on neither list: add it with “Add a game”.</p></div>`;
+    if (items.length) html += `<p class="planfoot"><button class="linkbtn" id="copyplayed">Copy as text</button></p>`;
+    $("view").innerHTML = html;
+    renderSync();
+  }
+  const playedText = () => playedItems().map(({ p, st }) => `${p.t}${st.r ? "  " + starsText(st.r) : ""}${st.pd ? "  (played " + dayLabel(st.pd) + ")" : ""}${st.n ? "\n  " + st.n : ""}`).join("\n");
+  const bggSearchUrl = q => "https://boardgamegeek.com/geeksearch.php?action=search&objecttype=boardgame&q=" + encodeURIComponent(q || "");
+  function openAddGame(name) {
+    sheetOpen = { kind: "addgame" };
+    showSheet(`<div class="grab"></div><h2 id="sheet-title">Add a game</h2>
+      <p class="meta">For a game that is on neither list. It is kept with your plan: mark it played, rate it and write what you thought.</p>
+      <label class="field"><span>Name</span><input id="own-name" value="${esc(name || "")}" autocomplete="off" maxlength="120"></label>
+      <label class="field"><span>BoardGameGeek link (optional)</span><input id="own-bgg" placeholder="https://boardgamegeek.com/boardgame/…" inputmode="url" autocomplete="off"></label>
+      <p class="fine"><a id="own-find" href="${esc(bggSearchUrl(name))}" target="_blank" rel="noopener">Find it on BoardGameGeek</a>, then copy the game's page link into the box above.</p>
+      <div class="actions"><button class="btn primary" data-own-add="played">${TICK}Add as played</button><button class="btn" data-own-add>Add</button></div>`, false);
+    setTimeout(() => $("own-name")?.focus(), 50);
+  }
+  function addOwnGame(played) {
+    const name = ($("own-name")?.value || "").trim().replace(/\s+/g, " ").slice(0, 120);
+    if (!name) { toast("Type the game's name first."); return $("own-name")?.focus(); }
+    const known = DATA.pr.find(p => norm(p.t) === norm(name));
+    if (known) { toast("That game is already in the list."); return openSheet("pr", known.k); }
+    const m = /(?:boardgame(?:expansion)?\/|^)(\d{1,7})(?:\/|$|\D)/.exec(($("own-bgg")?.value || "").trim());
+    const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6), t = Date.now();
+    plan.cg ||= {}; plan.cg[id] = { t: name, b: m ? +m[1] : 0, at: t };
+    ownGames();
+    if (played) setEntry("pr", OWN + id, { pd: t }); else scheduleWrite();
+    openSheet("pr", OWN + id);
+    toast(played ? `${name} added and marked played.` : `${name} added.`);
   }
 
   // ---------- Plan ----------
@@ -1076,6 +1158,7 @@ label.btn { cursor: pointer; position: relative; }
       : "Saved on this phone.";
   }
   function renderPlan() {
+    if (ui.plan.played) return renderPlayed();
     const v = $("view"), groups = planGroups();
     if (!groups.length) {
       v.innerHTML = `<div class="card"><h2>Your plan is empty</h2><p>Tap the star on any exhibitor or new game. Starred booths show up here, grouped by hall and sorted by booth number, so you can walk each hall in one pass and tick booths off as you go.</p><p class="fine" id="sync"></p></div>`;
@@ -1228,7 +1311,9 @@ label.btn { cursor: pointer; position: relative; }
       <button class="btn${st.s ? " on-star" : ""}" data-sheet-star>${STAR}${st.s ? "Starred" : "Star"}</button>
       <button class="btn${st.v ? " on-done" : ""}" data-sheet-visit>${TICK}${st.v ? "Visited" : "Mark visited"}</button></div>
       <div class="prioset" role="group" aria-label="Priority"><span>Priority</span>${Object.entries(PRIO).map(([k, l]) => `<button data-prio="${k}" aria-pressed="${!!st.s && st.p === k}">${l}</button>`).join("")}</div>
-      <p class="sharerow"><button class="btn sm" data-share><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>Share link</button>
+      ${kind === "pr" ? `<div class="playedset"><button class="btn sm${st.pd ? " on-done" : ""}" data-played>${TICK}${st.pd ? "Played " + dayLabel(st.pd) : "Mark played"}</button>
+        <span class="rate" role="group" aria-label="Your rating">${[1, 2, 3, 4, 5].map(n => `<button data-rate="${n}" aria-label="${n} of 5" aria-pressed="${(st.r || 0) >= n}">${STAR}</button>`).join("")}</span></div>` : ""}
+      <p class="sharerow"${id.startsWith?.(OWN) ? " hidden" : ""}><button class="btn sm" data-share><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>Share link</button>
         <input id="sharebox" class="sharebox" readonly hidden aria-label="Link to this ${kind === "pr" ? "game" : "exhibitor"}"></p>`;
     if (kind === "ex") {
       const e = exById.get(id), games = prByEx.get(id) || [];
@@ -1257,8 +1342,10 @@ label.btn { cursor: pointer; position: relative; }
       }
       if (p.d) html += `<p class="desc">${esc(p.d)}</p>`;
       if (ex) html += `<h3>Shown by</h3><div class="list">${exRow(ex)}</div>`;
+      if (p.src === "own") html += `<p class="fine">You added this game yourself.${p.bggId ? ` <a href="https://boardgamegeek.com/boardgame/${p.bggId}" target="_blank" rel="noopener">Open on BoardGameGeek</a>.` : ` <a href="${esc(bggSearchUrl(p.t))}" target="_blank" rel="noopener">Find it on BoardGameGeek</a>.`}
+        <button class="linkbtn" data-own-del>Remove this game</button></p>`;
     }
-    html += `<div class="note"><label for="note">My note</label><textarea id="note" placeholder="Price at the booth, demo times, who to ask for…">${esc(st.n || "")}</textarea></div>`;
+    html += `<div class="note"><label for="note">My note</label><textarea id="note" placeholder="${kind === "pr" ? "What you thought of it, the price at the booth, demo times…" : "Price at the booth, demo times, who to ask for…"}">${esc(st.n || "")}</textarea></div>`;
     showSheet(html);
   }
   const XICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
@@ -1377,6 +1464,19 @@ label.btn { cursor: pointer; position: relative; }
     if (!sheetOpen) return;
     const { kind, id } = sheetOpen;
     if (e.target.closest("[data-share]")) return shareItem(kind, id);
+    if (e.target.closest("[data-played]")) { setEntry(kind, id, { pd: entry(kind, id).pd ? 0 : Date.now() }); return openSheet(kind, id); }
+    const rb = e.target.closest("[data-rate]");
+    if (rb) { // a rating also counts as played; tapping the same star again clears it
+      const cur = entry(kind, id), r = cur.r === +rb.dataset.rate ? 0 : +rb.dataset.rate;
+      setEntry(kind, id, { r, pd: cur.pd || (r ? Date.now() : 0) }); return openSheet(kind, id);
+    }
+    const od = e.target.closest("[data-own-del]");
+    if (od) {
+      if (od.dataset.confirm !== "1") { od.dataset.confirm = "1"; od.textContent = "Tap again to remove"; return; }
+      const cid = id.slice(OWN.length); plan.cg[cid] = { ...plan.cg[cid], x: 1, at: Date.now() }; delete plan.pr[id];
+      ownGames(); scheduleWrite(); updateBadge(); closeSheet(); toast("Game removed.");
+      return;
+    }
     if (e.target.closest("[data-sheet-star]")) { setEntry(kind, id, { s: !entry(kind, id).s }); return openSheet(kind, id); }
     if (e.target.closest("[data-sheet-visit]")) { setEntry(kind, id, { v: !entry(kind, id).v }); return openSheet(kind, id); }
     const pb = e.target.closest("[data-prio]");
@@ -1410,8 +1510,8 @@ label.btn { cursor: pointer; position: relative; }
   });
 
   $("view").addEventListener("click", async e => {
-    if (e.target.id !== "copyplan") return;
-    const b = e.target, text = planText();
+    if (e.target.id !== "copyplan" && e.target.id !== "copyplayed") return;
+    const b = e.target, text = e.target.id === "copyplan" ? planText() : playedText();
     try { await navigator.clipboard.writeText(text); b.textContent = "Copied"; }
     catch {
       b.closest(".planfoot").insertAdjacentHTML("afterend", `<textarea class="card" style="width:100%;min-height:160px" readonly>${esc(text)}</textarea>`);
@@ -1443,7 +1543,11 @@ label.btn { cursor: pointer; position: relative; }
     if (!keepFilters) renderFilters();
     document.body.classList.toggle("is-map", tab === "map");
     if (tab === "exhibitors") renderList(filteredExhibitors(), exRow, "exhibitors", "Try another spelling, a booth code like 3K120, or clear the hall and category filters.");
-    else if (tab === "games") renderList(filteredGames(), gameRow, "new games", "Try a publisher, a designer, a mechanic like “worker placement”, or clear the filters.");
+    else if (tab === "games") {
+      renderList(filteredGames(), gameRow, "new games", "Try a publisher, a designer, a mechanic like “worker placement”, or clear the filters.");
+      const q = ui.games.q.trim(); // a game on neither list: add it yourself
+      if (q) $("view").insertAdjacentHTML("afterbegin", `<p class="addown"><button class="btn sm" data-addgame="${esc(q)}">+ Not in the list? Add “${esc(q)}” as a game</button></p>`);
+    }
     else if (tab === "plan") renderPlan();
     else if (tab === "map") renderMap();
     else if (tab === "import") renderImport();
@@ -1476,6 +1580,15 @@ label.btn { cursor: pointer; position: relative; }
       setTab("map");
     });
   }
+  document.addEventListener("click", e => {
+    const ag = e.target.closest("[data-addgame]");
+    if (ag) { e.stopPropagation(); return openAddGame(ag.dataset.addgame || ""); }
+    const oa = e.target.closest("[data-own-add]");
+    if (oa) { e.stopPropagation(); return addOwnGame(oa.dataset.ownAdd === "played"); }
+  }, true);
+  document.addEventListener("input", e => { // the BoardGameGeek search link follows the name you type
+    if (e.target.id === "own-name") { const a = $("own-find"); if (a) a.href = bggSearchUrl(e.target.value); }
+  });
   document.addEventListener("click", e => {
     const b = e.target.closest("[data-hallmap]"); if (!b) return;
     mapsReady.then(() => { if (!MAPS) return; ui.map.id = mapForHall(b.dataset.hallmap); MV.focus = null; closeSheet(true); setTab("map"); });
@@ -2948,7 +3061,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
   function handoffIn(code) {
     try {
       const bin = atob(code.replace(/-/g, "+").replace(/_/g, "/")), d = JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0))));
-      plan = mergePlans(plan, { ex: d.p?.ex || {}, pr: d.p?.pr || {} }); scheduleWrite(); updateBadge();
+      plan = mergePlans(plan, { ex: d.p?.ex || {}, pr: d.p?.pr || {}, cg: d.p?.cg || {} }); ownGames(); scheduleWrite(); updateBadge();
       if (STANDALONE && /^https:\/\/claude\.ai\//.test(d.r || "")) { CLAUDE_PAGE = d.r; try { localStorage.setItem(LS_KEY + "-home", d.r); } catch {} }
       const have = new Set(GPS.local.map(p => p.t + ":" + p.lat));
       for (const [map, x, y, lat, lon, acc, t] of d.g || []) if (!have.has(t + ":" + lat)) GPS.local.push({ map, x, y, lat, lon, acc, t });
@@ -3471,6 +3584,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       const at = standItems.get(s[2])[kind];
       if (at[at.length - 1] !== x) at.push(x);
     }
+    ownGames();
     if (location.hash.startsWith("#handoff=")) handoffIn(location.hash.slice(9));
     const deep = navParse(location.hash); // a link to a game, exhibitor or booth
     if (deep?.kind === "booth") mapsReady.then(() => { const l = standLoc.get(deep.id); if (l) ui.map.id = l.map; });
