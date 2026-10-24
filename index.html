@@ -2065,6 +2065,10 @@ label.btn { cursor: pointer; position: relative; }
       if (e.target.closest("[data-gps]")) return gpsToggle();
       if (e.target.closest("[data-gps-cal]")) { GPS.cal = true; MV.place = false; return drawMarks(); }
       if (e.target.closest("[data-gps-cancel]")) { GPS.cal = false; return drawMarks(); }
+      if (e.target.closest("[data-gps-reset]")) { // the points kept on this phone; shared ones stay
+        GPS.local = []; try { localStorage.removeItem(LS_KEY + "-gpsfix"); } catch {}
+        gpsFit(); toast("Your fine-tuning is undone: the dot follows the real map alone again."); return drawMarks();
+      }
       if (e.target.closest("[data-gps-here]")) {
         const spot = crossSpot();
         if (!spot) return toast("Put the cross on a hall plan first.");
@@ -3138,7 +3142,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     if (!GPS.on) return "";
     if (!GPS.fix) return `<div class="line">GPS: waiting for a position…</div>`;
     const where = GPS.fit && GPS.where ? (GPS.where.out * Math.hypot(GPS.fit.a, GPS.fit.b) ** -1 > 15 ? ` · outside, near ${esc(MAPS.maps[GPS.where.map].n)}` : ` · ${esc(MAPS.maps[GPS.where.map].n)}`) : "";
-    if (GPS.fit?.ref) return `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m${where}. Placed on the real map${GPS.fit.n ? `, fine-tuned with ${GPS.fit.n} ${GPS.fit.n === 1 ? "point" : "points"}` : ""}. If the dot sits off where you stand, fine-tune it.</div><div class="legendbtns"><button class="btn sm" data-gps-cal>Fine-tune here</button></div>`;
+    if (GPS.fit?.ref) return `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m${where}. Placed on the real map${GPS.fit.n ? `, fine-tuned with ${GPS.fit.n} ${GPS.fit.n === 1 ? "point" : "points"}` : ""}. If the dot sits off where you stand, fine-tune it.</div><div class="legendbtns"><button class="btn sm" data-gps-cal>Fine-tune here</button>${GPS.local.length ? `<button class="btn sm" data-gps-reset>Undo my fine-tuning</button>` : ""}</div>`;
     return GPS.fit
       ? `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m${where}. Lined up from ${GPS.fit.n} points${GPS.fit.rms > 15 ? " (they disagree, so rough)" : GPS.fit.n < 4 ? " (more points, spread out, make it more exact)" : ""}.</div><div class="legendbtns"><button class="btn sm" data-gps-cal>Add a line-up point</button></div>`
       : `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m, but the map is not lined up with GPS yet. Put the cross where you stand and tap “I'm here”, at two spots at least 50 m apart. Ceiling photos also line it up.</div><div class="legendbtns"><button class="btn sm primary" data-gps-cal>Line up here</button></div>`;
