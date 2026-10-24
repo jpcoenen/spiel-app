@@ -554,7 +554,7 @@ label.btn { cursor: pointer; position: relative; }
   // The page itself always comes from claude.ai (service workers are not allowed there), but what it loads after
   // that is kept in IndexedDB: the data files, the hall plans and the cover sheets. With the page open, or on a fair
   // network too slow to finish a download, the app runs from that copy.
-  const DATA_V = "20261024c"; // bump whenever data.json or maps.json is republished
+  const DATA_V = "20261024d"; // bump whenever data.json or maps.json is republished
   const IMG_V = "20261022c";  // bump whenever the hall plans or cover sheets are republished
   const IDB = (() => {
     let dbp = null;
@@ -2995,7 +2995,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     if (!MAPS?.geo) return;
     const seen = new Set();
     const pts = [...GPS.pairs.values(), ...GPS.local].filter(p => p && p.acc <= 40 && MAPS.maps[p.map] && !seen.has(p.t + ":" + p.lat) && seen.add(p.t + ":" + p.lat))
-      .map(p => ({ lat: p.lat, lon: p.lon, acc: p.acc, o: toOverview(p.map, p.x, p.y) })).filter(p => p.o);
+      .map(p => ({ lat: p.lat, lon: p.lon, acc: p.acc, map: p.map, x: p.x, y: p.y, o: toOverview(p.map, p.x, p.y) })).filter(p => p.o);
     if (pts.length < 2 && !MAPS.geo.ref) return;
     const o = pts.length ? [pts.reduce((s, p) => s + p.lat, 0) / pts.length, pts.reduce((s, p) => s + p.lon, 0) / pts.length] : [0, 0];
     // weighted least squares for overview = [a -b; b a] (east, south) + t
@@ -3014,6 +3014,20 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     const miss = (f, p) => { const [x, y] = enu(p.lat, p.lon, f.o); return Math.hypot(f.a * x - f.b * y + f.tu - p.o[0], f.b * x + f.a * y + f.tv - p.o[1]) / Math.hypot(f.a, f.b); };
     // the real-world position from OpenStreetMap's hall outlines; your own line-up points only shift it, by their
     // average difference, more as there are more of them (it corrects for how this phone's GPS is off here)
+    // each hall's own transform to the real world (geo.tf); fine-tuning moves your GPS position by the average
+    // difference at your line-up points, more as there are more of them
+    if (MAPS.geo.ref && MAPS.geo.tf) {
+      const r = MAPS.geo.ref, f = { o: r.o, a: r.a, b: r.b, tu: r.tu, tv: r.tv, de: 0, ds: 0, n: pts.length, ref: true, tf: true, rms: 0 };
+      const ps = pts.filter(p => MAPS.geo.tf[p.map]).map(p => ({ ...p, m: planToM(p.map, p.x, p.y), g: enu(p.lat, p.lon, r.o) }));
+      if (ps.length) {
+        let sw = 0, de = 0, ds = 0;
+        for (const p of ps) { const w = 1 / Math.max(5, p.acc) ** 2; sw += w; de += w * (p.m[0] - p.g[0]); ds += w * (p.m[1] - p.g[1]); }
+        const k = ps.length / (ps.length + 0.5); f.de = de / sw * k; f.ds = ds / sw * k;
+        f.rms = Math.sqrt(ps.reduce((s, p) => s + (p.g[0] + f.de - p.m[0]) ** 2 + (p.g[1] + f.ds - p.m[1]) ** 2, 0) / ps.length);
+      }
+      GPS.fit = f;
+      return;
+    }
     if (MAPS.geo.ref) {
       const r = MAPS.geo.ref, f = { o: r.o, a: r.a, b: r.b, tu: r.tu, tv: r.tv, n: pts.length, ref: true, rms: 0 };
       if (pts.length) {
@@ -3036,14 +3050,44 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
   }
   const gpsToOverview = (lat, lon) => { const f = GPS.fit, [x, y] = enu(lat, lon, f.o); return [f.a * x - f.b * y + f.tu, f.b * x + f.a * y + f.tv]; };
   // the GPS spot on the map on screen as [x, y, accuracy radius], or null
+  // a hall plan point -> metres east and south of the reference point, with that hall's own transform
+  const planToM = (h, x, y) => { const [a, b, tx, ty] = MAPS.geo.tf[h]; return [a * x - b * y + tx, b * x + a * y + ty]; };
+  // metres -> the hall whose own outline holds the point and the point on its plan: where hall boxes overlap, the one
+  // you are deepest inside, and a hall before an outdoor area; outside all of them, the nearest hall
+  function fromMetric(e, s) {
+    let best = null, bd = Infinity, inBox = null, depthBest = -1;
+    for (const [id, [a, b, tx, ty]] of Object.entries(MAPS.geo.tf)) {
+      if (!MAPS.maps[id]) continue;
+      const q = a * a + b * b, dx = e - tx, dy = s - ty, x = (a * dx + b * dy) / q, y = (-b * dx + a * dy) / q, mpp = Math.sqrt(q);
+      const g = MAPS.geo.halls[id] || [], [x0, y0, x1, y1] = MAPS.fair?.halls[id]?.crop || [0, 0, MAPS.maps[id].w, MAPS.maps[id].h];
+      const d = Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(y0 - y, 0, y - y1)) * mpp;
+      const p = { map: id, x, y, mPerPx: mpp, outM: d };
+      if (d < bd) { bd = d; best = p; }
+      if (g[8] != null && x >= g[5] && x <= g[7] && y >= g[6] && y <= g[8]) {
+        const depth = Math.min(x - g[5], g[7] - x, y - g[6], g[8] - y) * mpp + (id.startsWith("FG") ? 0 : 1000);
+        if (depth > depthBest) { depthBest = depth; inBox = { ...p, outM: 0 }; }
+      }
+    }
+    return inBox || best;
+  }
+  // a GPS position on the plans: hall, point on its plan, metres outside the hall, and on the site plan
+  function gpsLocate(lat, lon) {
+    const f = GPS.fit;
+    if (f.tf) {
+      const [e0, s0] = enu(lat, lon, f.o), e = e0 + f.de, s = s0 + f.ds, p = fromMetric(e, s), k = Math.hypot(f.a, f.b);
+      return p && { ...p, ov: [f.a * e - f.b * s + f.tu, f.b * e + f.a * s + f.tv], ovPerM: k };
+    }
+    const ov = gpsToOverview(lat, lon), k = Math.hypot(f.a, f.b), p = fromOverview(ov[0], ov[1]);
+    return p && { ...p, mPerPx: p.k / k, outM: p.out / k, ov, ovPerM: k };
+  }
   function gpsOnView() {
     GPS.where = null;
     if (!GPS.on || !GPS.fix || !GPS.fit || !MAPS?.geo) return null;
-    const ov = gpsToOverview(GPS.fix.lat, GPS.fix.lon), r = GPS.fix.acc * Math.hypot(GPS.fit.a, GPS.fit.b); // overview pixels
-    const p = fromOverview(ov[0], ov[1]); GPS.where = p;
-    if (MV.id === "0") return [ov[0], ov[1], r];
-    const v = p && onView(p.map, p.x, p.y);
-    return v ? [v[0], v[1], r / p.k * viewK(p.map)] : null;
+    const p = gpsLocate(GPS.fix.lat, GPS.fix.lon); GPS.where = p;
+    if (!p) return null;
+    if (MV.id === "0") return [p.ov[0], p.ov[1], GPS.fix.acc * p.ovPerM];
+    const v = onView(p.map, p.x, p.y);
+    return v ? [v[0], v[1], GPS.fix.acc / p.mPerPx * viewK(p.map)] : null;
   }
   // GPS stays on until you turn it off, also after the page reloads (remembered on this device)
   const GPS_KEY = LS_KEY + "-gps";
@@ -3076,8 +3120,8 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       gpsReading({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() });
       if (!GPS.centred && GPS.fit) { // the first fix: show it
         GPS.centred = true;
-        const ov = gpsToOverview(GPS.fix.lat, GPS.fix.lon), q = fromOverview(ov[0], ov[1]);
-        if (q && q.out * Math.hypot(GPS.fit.a, GPS.fit.b) ** -1 > 1000) toast("GPS puts you more than a kilometre from the fair.");
+        const q = gpsLocate(GPS.fix.lat, GPS.fix.lon);
+        if (q && q.outM > 1000) toast("GPS puts you more than a kilometre from the fair.");
         else if (q && tab === "map") { ui.map.id = q.map; MV.focus = null; MV.pendingPoint = { map: q.map, x: q.x, y: q.y }; return render(false); }
       }
       if (tab === "map" && $("mapwrap")) drawMarks();
@@ -3177,7 +3221,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       <div class="legendbtns"><button class="btn sm primary" data-gps-here>I'm here</button><button class="btn sm" data-gps-cancel>Cancel</button></div>`;
     if (!GPS.on) return "";
     if (!GPS.fix) return `<div class="line">GPS: waiting for a position…</div>`;
-    const where = GPS.fit && GPS.where ? (GPS.where.out * Math.hypot(GPS.fit.a, GPS.fit.b) ** -1 > 15 ? ` · outside, near ${esc(MAPS.maps[GPS.where.map].n)}` : ` · ${esc(MAPS.maps[GPS.where.map].n)}`) : "";
+    const where = GPS.fit && GPS.where ? (GPS.where.outM > 15 ? ` · outside, near ${esc(MAPS.maps[GPS.where.map].n)}` : ` · ${esc(MAPS.maps[GPS.where.map].n)}`) : "";
     if (GPS.fit?.ref) return `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m${where}. Placed on the real map${GPS.fit.n ? `, fine-tuned with ${GPS.fit.n} ${GPS.fit.n === 1 ? "point" : "points"}` : ""}. If the dot sits off where you stand, fine-tune it.</div><div class="legendbtns"><button class="btn sm" data-gps-cal>Fine-tune here</button>${GPS.local.length ? `<button class="btn sm" data-gps-reset>Undo my fine-tuning</button>` : ""}</div>`;
     return GPS.fit
       ? `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m${where}. Lined up from ${GPS.fit.n} points${GPS.fit.rms > 15 ? " (they disagree, so rough)" : GPS.fit.n < 4 ? " (more points, spread out, make it more exact)" : ""}.</div><div class="legendbtns"><button class="btn sm" data-gps-cal>Add a line-up point</button></div>`
