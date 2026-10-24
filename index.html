@@ -554,7 +554,7 @@ label.btn { cursor: pointer; position: relative; }
   // The page itself always comes from claude.ai (service workers are not allowed there), but what it loads after
   // that is kept in IndexedDB: the data files, the hall plans and the cover sheets. With the page open, or on a fair
   // network too slow to finish a download, the app runs from that copy.
-  const DATA_V = "20261024b"; // bump whenever data.json or maps.json is republished
+  const DATA_V = "20261024c"; // bump whenever data.json or maps.json is republished
   const IMG_V = "20261022c";  // bump whenever the hall plans or cover sheets are republished
   const IDB = (() => {
     let dbp = null;
@@ -2963,18 +2963,19 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
   }
   IDB.get("gps:pairs").then(v => { if (v && !GPS.pairs.size) { GPS.pairs = new Map(v); mapsReady.then(gpsFit); } });
   mapsReady.then(() => gpsFit()); // the real-map position works without any line-up points
-  const RAD = Math.PI / 180, TURN = 38 * RAD;
+  const RAD = Math.PI / 180;
+  const turn = () => (MAPS.geo?.turn ?? 38) * RAD; // how the plans sit on the site plan; measured from the halls' walls
   // a point on a hall plan -> the fairground overview (the halls sit upright on the overview turned 38 degrees)
   function toOverview(map, x, y) {
     if (map === "0") return [x, y];
     const g = MAPS.geo?.halls[map]; if (!g) return null;
-    const [k, cx, cy, pcx, pcy] = g, ca = Math.cos(TURN), sa = Math.sin(TURN);
+    const [k, cx, cy, pcx, pcy] = g, ca = Math.cos(turn()), sa = Math.sin(turn());
     const tx = ca * cx + sa * cy + (x - pcx) * k, ty = -sa * cx + ca * cy + (y - pcy) * k;
     return [ca * tx - sa * ty, sa * tx + ca * ty];
   }
   // the overview -> the hall the point is in, or the nearest one, and the point on its plan
   function fromOverview(ox, oy) {
-    const ca = Math.cos(TURN), sa = Math.sin(TURN), tx = ca * ox + sa * oy, ty = -sa * ox + ca * oy;
+    const ca = Math.cos(turn()), sa = Math.sin(turn()), tx = ca * ox + sa * oy, ty = -sa * ox + ca * oy;
     // inside a hall's own outline first; the shown part of a plan also reaches over its doors into the next building
     let best = null, bd = Infinity, inBox = null;
     for (const [id, [k, cx, cy, pcx, pcy, bx0, by0, bx1, by1]] of Object.entries(MAPS.geo.halls)) {
