@@ -3,6 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="Unofficial SPIEL Essen 2026 companion: plan booths and new games with BoardGameGeek built in, and the whole fair on one map with GPS.">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="spielplan">
+<meta property="og:title" content="spielplan · SPIEL Essen 2026">
+<meta property="og:description" content="Your SPIEL Essen 2026, planned booth by booth. BoardGameGeek built in, the whole fair on one map, GPS on the hall plans.">
+<meta property="og:url" content="https://jpcoenen.github.io/spiel-app/">
+<meta property="og:image" content="https://jpcoenen.github.io/spiel-app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="spielplan: BoardGameGeek built in, the whole fair on one map, GPS on the map, your plan by priority, ready for bad signal">
+<meta name="twitter:card" content="summary_large_image">
 </head>
 <body>
 <title>Spielplan</title>
@@ -1420,6 +1431,7 @@ label.btn { cursor: pointer; position: relative; }
     window.scrollTo(0, 0); document.body.scrollTop = 0;
     render(true);
     if (!fromHash) navPush();
+    gpsSync();
   }
   document.querySelector("nav.tabs").addEventListener("click", e => {
     const b = e.target.closest("button[data-tab]"); if (b) setTab(b.dataset.tab);
@@ -3037,9 +3049,9 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
   function gpsToggle(auto) {
     if (GPS.blocked && !STANDALONE) return auto ? undefined : gpsElsewhere();
     if (GPS.on) {
-      navigator.geolocation?.clearWatch(GPS.watch);
       Object.assign(GPS, { on: false, fix: null, cal: false });
       try { localStorage.removeItem(GPS_KEY); } catch {}
+      gpsSync();
       return drawMarks();
     }
     if (!navigator.geolocation) return toast("This browser does not give the page your location.");
@@ -3047,6 +3059,17 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     try { localStorage.setItem(GPS_KEY, "1"); } catch {}
     drawMarks();
     if (!auto) toast("Finding your GPS position…");
+    gpsSync();
+  }
+  // The GPS itself only runs while you look at the map: hidden page (another app, screen off, another tab) or another
+  // tab of the app, and it is off; back on the map, it runs again if GPS is turned on. No use in the background.
+  function gpsSync() {
+    const want = GPS.on && !document.hidden && tab === "map";
+    if (!want && GPS.watch != null) { navigator.geolocation.clearWatch(GPS.watch); GPS.watch = null; GPS.collect = null; }
+    if (want && GPS.watch == null) gpsWatch();
+  }
+  document.addEventListener("visibilitychange", () => gpsSync());
+  function gpsWatch() {
     GPS.hist = [];
     GPS.watch = navigator.geolocation.watchPosition(p => {
       gpsReading({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() });
@@ -3059,7 +3082,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       if (tab === "map" && $("mapwrap")) drawMarks();
     }, e => {
       if (e.code === 1) {
-        navigator.geolocation.clearWatch(GPS.watch);
+        navigator.geolocation.clearWatch(GPS.watch); GPS.watch = null; GPS.on = false;
         try { localStorage.removeItem(GPS_KEY); } catch {}
         gpsBlocked();
         if (STANDALONE) toast("Location is turned off for this page. Allow it in the browser's site settings to see the GPS dot.", 9000);
