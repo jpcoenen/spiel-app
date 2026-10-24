@@ -249,7 +249,7 @@ nav.tabs .badge {
 .pgo { flex: none; color: var(--muted); font-size: 1.3rem; font-weight: 700; padding: 0 4px; }
 .srcpill { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
 .srcpill.spiel { background: var(--accent); color: #fff; border-color: var(--accent); }
-.bggmore { margin-top: 18px; }
+.bggmore { margin-top: 18px; } .bggmore .list { margin-bottom: 12px; }
 .sechead { font-size: 1rem; margin: 0 0 8px; } .sechead small { color: var(--muted); font-weight: 400; }
 .picks { display: grid; gap: 6px; margin-bottom: 12px; }
 .pick { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 6px 10px 6px 6px; min-height: 52px;
@@ -1275,6 +1275,8 @@ label.btn { cursor: pointer; position: relative; }
   const atSpiel = id => (spielIds ||= new Set(DATA.pr.filter(p => p.bgg?.id).map(p => p.bgg.id))).has(id);
   // a game already in the app with this BoardGameGeek id
   const knownByBgg = id => id && DATA.pr.find(p => p.bgg?.id === id || p.bggId === id);
+  // BoardGameGeek's game is in the app already: at SPIEL, or added by you (linked, or by the same name)
+  const inApp = g => knownByBgg(g.id) || DATA.pr.some(p => p.src === "own" && !p.bggId && skey(p.t) === g.k);
   function pickRow(g, sel, attr, tail) {
     const known = knownByBgg(g.id);
     return `<button class="pick" ${attr}="${g.id}"${tail ? "" : ` aria-pressed="${!!sel}"`}>${bggCover(g, 40)}<span class="pmain"><span class="pname">${esc(g.n)}</span>
@@ -1282,9 +1284,10 @@ label.btn { cursor: pointer; position: relative; }
   }
   // a SPIEL game among the matches: tapping opens it
   const spielPick = p => `<button class="pick spiel" data-openpr="${esc(p.k)}">${coverHtml(p, 40)}<span class="pmain"><span class="pname">${esc(p.t)}</span>
-    <span class="psub"><span class="srcpill spiel">SPIEL 2026</span> ${p.s[0]?.[1] ? "booth " + esc(p.s[0][1]) : esc(p.p || "")}</span></span><span class="pgo" aria-hidden="true">›</span></button>`;
-  // SPIEL's games matching a name well, best first
-  const spielMatches = (q, n) => skey(q).length < 2 ? [] : [...gameScores(q)].filter(([p, sc]) => p.src !== "own" && sc >= 0.6).sort((a, b) => b[1] - a[1]).slice(0, n).map(x => x[0]);
+    <span class="psub">${p.src === "own" ? `<span class="srcpill">Your own</span>${p.y ? " " + p.y : ""}` : `<span class="srcpill spiel">SPIEL 2026</span> ${p.s[0]?.[1] ? "booth " + esc(p.s[0][1]) : esc(p.p || "")}`}</span></span><span class="pgo" aria-hidden="true">›</span></button>`;
+  // the games in the app matching a name well, best first: SPIEL's (own: false) or the ones you added (own: true)
+  const spielMatches = (q, n, own) => skey(q).length < 2 ? [] : [...gameScores(q)].filter(([p, sc]) => (p.src === "own") === !!own && sc + (own ? 0.25 : 0) >= 0.6)
+    .sort((a, b) => b[1] - a[1]).slice(0, n).map(x => x[0]);
   // the add sheet: ADD.sel is the BoardGameGeek game it will be linked to; ADD.own is true once you picked yourself
   const ADD = { sel: null, own: false, hits: [] };
   function renderPicks() {
@@ -1293,14 +1296,16 @@ label.btn { cursor: pointer; position: relative; }
     if (skey(name).length < 2) { box.innerHTML = ""; return; }
     // SPIEL's own games first: one of those is opened, not added
     const sp = spielMatches(name, 3), spExact = sp.some(p => skey(p.t) === skey(name));
-    const spHtml = sp.length ? `<p class="picklabel">At SPIEL 2026${spExact ? ": this one is in the list already" : ""}</p><div class="picks">${sp.map(spielPick).join("")}</div>` : "";
+    const mine = spielMatches(name, 3, true), mineExact = mine.some(p => skey(p.t) === skey(name));
+    const spHtml = (sp.length ? `<p class="picklabel">At SPIEL 2026${spExact ? ": this one is in the list already" : ""}</p><div class="picks">${sp.map(spielPick).join("")}</div>` : "")
+      + (mine.length ? `<p class="picklabel">Added by you${mineExact ? " already" : ""}</p><div class="picks">${mine.map(spielPick).join("")}</div>` : "");
     if (!BGGCAT) { box.innerHTML = spHtml + (bggCatP ? `<p class="fine">Looking it up on BoardGameGeek…</p>` : ""); return; }
     const found = bggFind(name, 6);
-    ADD.hits = found.filter(g => !atSpiel(g.id));
-    if (!ADD.own) ADD.sel = spExact || !found.sure || atSpiel(found.sure.id) ? null : found.sure;
+    ADD.hits = found.filter(g => !inApp(g)); // the ones in the app are listed above
+    if (!ADD.own) ADD.sel = spExact || mineExact || !found.sure || inApp(found.sure) ? null : found.sure;
     if (ADD.sel && !ADD.hits.includes(ADD.sel)) ADD.hits.unshift(ADD.sel);
     box.innerHTML = spHtml + (ADD.hits.length
-      ? `<p class="picklabel">${sp.length ? "Not at SPIEL? " : ""}${ADD.sel ? "Linked to BoardGameGeek. Not the right one? Pick another:" : "Which one is it on BoardGameGeek?"}</p>
+      ? `<p class="picklabel">${sp.length || mine.length ? "Something else? " : ""}${ADD.sel ? "Linked to BoardGameGeek. Not the right one? Pick another:" : "Which one is it on BoardGameGeek?"}</p>
         <div class="picks">${ADD.hits.map(g => pickRow(g, g === ADD.sel, "data-pick")).join("")}
         <button class="pick nopick" data-pick="0" aria-pressed="${!ADD.sel}"><span class="pmain"><span class="pname">None of these</span><span class="psub">Add it without a BoardGameGeek link</span></span>${!ADD.sel ? `<span class="ptick">${TICK}</span>` : ""}</button></div>`
       : `<p class="fine">Not among BoardGameGeek's ranked games; very new or small games often are not. It is added with just its name.</p>`);
@@ -1339,14 +1344,19 @@ label.btn { cursor: pointer; position: relative; }
     openSheet("pr", OWN + id);
     toast(played ? `${name} added and marked played.` : `${name} added.`);
   }
-  // the Games tab's matches that are not at SPIEL; failed: true when the list could not load, null when not looked up
+  // the Games tab's matches that are not at SPIEL: the games you added (bggMine), then BoardGameGeek's that are in the
+  // app nowhere yet. failed: undefined when BoardGameGeek's list is loaded, false while it loads, true when it could
+  // not, null when it is not looked up (a filter is on)
+  let bggMine = [];
   function fillBggMore(q, failed) {
     const box = $("bggmore"); if (!box || ui.games.q.trim() !== q) return;
-    const hits = failed === undefined ? bggFind(q, 12).filter(g => !atSpiel(g.id)) : [], more = box.dataset.more === "1";
-    box.innerHTML = (failed === null ? "" : `<h3 class="sechead">Not at SPIEL 2026 <small>· on BoardGameGeek</small></h3>` + (hits.length
-      ? `<div class="picks">${hits.slice(0, more ? 12 : 4).map(g => pickRow(g, false, "data-quickadd", "+")).join("")}</div>${hits.length > 4 && !more ? `<button class="linkbtn" data-bggmore>More from BoardGameGeek</button>` : ""}`
-      : `<p class="fine">${failed ? "BoardGameGeek's list could not load (no signal?)." : "None of BoardGameGeek's ranked games matches."}</p>`))
-      + `<p class="addown"><button class="btn sm" data-addgame="${esc(q)}">+ Add “${esc(q)}” as your own game</button></p>`;
+    const hits = failed === undefined ? bggFind(q, 12).filter(g => !inApp(g)) : [], more = box.dataset.more === "1";
+    const bgg = failed === null ? "" : hits.length
+      ? `<p class="picklabel">On BoardGameGeek</p><div class="picks">${hits.slice(0, more ? 12 : 4).map(g => pickRow(g, false, "data-quickadd", "+")).join("")}</div>${hits.length > 4 && !more ? `<button class="linkbtn" data-bggmore>More from BoardGameGeek</button>` : ""}`
+      : failed === false ? "" : `<p class="fine">${failed ? "BoardGameGeek's list could not load (no signal?)." : "None of BoardGameGeek's other ranked games matches."}</p>`;
+    box.innerHTML = (bggMine.length || failed !== null ? `<h3 class="sechead">Not at SPIEL 2026</h3>` : "")
+      + (bggMine.length ? `<p class="picklabel">Added by you</p><div class="list">${bggMine.map(gameRow).join("")}</div>` : "")
+      + bgg + `<p class="addown"><button class="btn sm" data-addgame="${esc(q)}">+ Add “${esc(q)}” as your own game</button></p>`;
   }
   // an own game without a BoardGameGeek link: its sheet offers the likely matches
   function ownLinkPicks(p) {
@@ -1792,13 +1802,15 @@ label.btn { cursor: pointer; position: relative; }
     document.body.classList.toggle("is-map", tab === "map");
     if (tab === "exhibitors") renderList(filteredExhibitors(), exRow, "exhibitors", "Try another spelling, a booth code like 3K120, or clear the hall and category filters.");
     else if (tab === "games") {
-      const games = filteredGames();
-      renderList(games, gameRow, ui.games.q.trim() ? "new games at SPIEL 2026" : "new games", "Try a publisher, a designer, a mechanic like “worker placement”, or clear the filters.");
-      const q = ui.games.q.trim(), g = ui.games; // games not at SPIEL: BoardGameGeek's matches after SPIEL's own
-      if (q && games.length > shown) $("view").insertAdjacentHTML("afterbegin", `<p class="addown"><button class="btn sm" data-addgame="${esc(q)}">+ Not at SPIEL? Add “${esc(q)}”</button></p>`);
+      // searching: SPIEL's games, then the ones not at SPIEL (yours, then BoardGameGeek's), each game once
+      const q = ui.games.q.trim(), g = ui.games, all = filteredGames(), spiel = q ? all.filter(p => p.src !== "own") : all;
+      const below = q && spiel.length <= shown, games = below ? spiel : all;
+      renderList(games, gameRow, q ? (below ? "new games at SPIEL 2026" : "games") : "new games", "Try a publisher, a designer, a mechanic like “worker placement”, or clear the filters.");
+      if (q && !below) $("view").insertAdjacentHTML("afterbegin", `<p class="addown"><button class="btn sm" data-addgame="${esc(q)}">+ Not at SPIEL? Add “${esc(q)}”</button></p>`);
       else if (q) {
+        bggMine = all.filter(p => p.src === "own");
         $("view").insertAdjacentHTML("beforeend", `<section class="bggmore" id="bggmore"></section>`);
-        if (skey(q).length >= 2 && !g.hall && !g.genre && !g.tag && !g.minth && !ui.prio) bggCatalog().then(() => fillBggMore(q), () => fillBggMore(q, true));
+        if (skey(q).length >= 2 && !g.hall && !g.genre && !g.tag && !g.minth && !ui.prio) { fillBggMore(q, false); bggCatalog().then(() => fillBggMore(q), () => fillBggMore(q, true)); }
         else fillBggMore(q, null);
       }
     }
