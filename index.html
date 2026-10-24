@@ -3032,17 +3032,21 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     const v = p && onView(p.map, p.x, p.y);
     return v ? [v[0], v[1], r / p.k * viewK(p.map)] : null;
   }
-  function gpsToggle() {
-    if (GPS.blocked && !STANDALONE) return gpsElsewhere();
+  // GPS stays on until you turn it off, also after the page reloads (remembered on this device)
+  const GPS_KEY = LS_KEY + "-gps";
+  function gpsToggle(auto) {
+    if (GPS.blocked && !STANDALONE) return auto ? undefined : gpsElsewhere();
     if (GPS.on) {
       navigator.geolocation?.clearWatch(GPS.watch);
       Object.assign(GPS, { on: false, fix: null, cal: false });
+      try { localStorage.removeItem(GPS_KEY); } catch {}
       return drawMarks();
     }
     if (!navigator.geolocation) return toast("This browser does not give the page your location.");
     Object.assign(GPS, { on: true, centred: false, warned: false });
-    MV.legendOpen = true; drawMarks();
-    toast("Finding your GPS position…");
+    try { localStorage.setItem(GPS_KEY, "1"); } catch {}
+    drawMarks();
+    if (!auto) toast("Finding your GPS position…");
     GPS.hist = [];
     GPS.watch = navigator.geolocation.watchPosition(p => {
       gpsReading({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() });
@@ -3056,6 +3060,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     }, e => {
       if (e.code === 1) {
         navigator.geolocation.clearWatch(GPS.watch);
+        try { localStorage.removeItem(GPS_KEY); } catch {}
         gpsBlocked();
         if (STANDALONE) toast("Location is turned off for this page. Allow it in the browser's site settings to see the GPS dot.", 9000);
         else gpsElsewhere();
@@ -3106,6 +3111,13 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     };
     tick();
   }
+  // turned on last time: on again, but only where the browser already allows location (so no question out of the blue)
+  mapsReady.then(async () => {
+    let on = false; try { on = localStorage.getItem(GPS_KEY) === "1"; } catch {}
+    if (!on || GPS.on || !navigator.geolocation || GPS.blocked && !STANDALONE) return;
+    const st = await navigator.permissions?.query({ name: "geolocation" }).then(p => p.state, () => null);
+    if (st === "granted" || st == null) gpsToggle(true);
+  });
   // line-up points kept only on this phone (from the GPS copy, or made offline) go to the shared data when possible
   async function gpsShareLocal() {
     if (!CEIL.db || !CEIL.canWrite || !navigator.onLine || !GPS.local.length) return;
