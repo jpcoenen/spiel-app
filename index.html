@@ -244,6 +244,19 @@ nav.tabs .badge {
 .playedtag { display: inline-flex; align-items: center; gap: 3px; font-size: 0.75rem; font-weight: 700; color: var(--done); }
 .playedtag svg { width: 12px; height: 12px; }
 .addown { margin: 0 0 10px; }
+.cover.img { background-size: cover; background-position: center; background-color: var(--bg); }
+.picklabel { margin: 4px 0 6px; font-size: 0.85rem; font-weight: 700; }
+.picks { display: grid; gap: 6px; margin-bottom: 12px; }
+.pick { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 6px 10px 6px 6px; min-height: 52px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font: inherit; }
+.pick[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.pick.nopick { padding-left: 12px; }
+.pmain { flex: 1; min-width: 0; display: grid; }
+.pname { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.psub { color: var(--muted); font-size: 0.8rem; }
+.ptick { color: var(--accent); flex: none; } .ptick svg { width: 20px; height: 20px; }
+.ownlink { margin: 0 0 12px; font-size: 0.88rem; } .ownlink summary { cursor: pointer; color: var(--accent); font-weight: 700; padding: 6px 0; }
+.linkbtn.inl { padding: 0 2px; font-size: inherit; }
 .row .sub.thought { white-space: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; color: var(--ink); }
 .field { display: grid; gap: 4px; margin-bottom: 10px; font-size: 0.85rem; font-weight: 700; }
 .field input { font: 400 1rem var(--font-body); padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); }
@@ -567,7 +580,7 @@ label.btn { cursor: pointer; position: relative; }
   // The page itself always comes from claude.ai (service workers are not allowed there), but what it loads after
   // that is kept in IndexedDB: the data files, the hall plans and the cover sheets. With the page open, or on a fair
   // network too slow to finish a download, the app runs from that copy.
-  const DATA_V = "20261024d"; // bump whenever data.json or maps.json is republished
+  const DATA_V = "20261024e"; // bump whenever data.json or maps.json is republished
   const IMG_V = "20261022c";  // bump whenever the hall plans or cover sheets are republished
   const IDB = (() => {
     let dbp = null;
@@ -1044,7 +1057,8 @@ label.btn { cursor: pointer; position: relative; }
   const starMatch = (st, f) => !f || !!st.s && (f === "s" || (f === "hm" ? st.p === "h" || st.p === "m" : f === "n" ? !PRIO[st.p] : st.p === f));
   const prioPill = st => st.s && PRIO[st.p] ? `<span class="prio ${st.p}">${PRIO[st.p]}</span>` : "";
   const DIE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.5" cy="8.5" r="1.3" fill="currentColor"/><circle cx="15.5" cy="15.5" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/></svg>';
-  const coverHtml = (p, size) => p.c == null
+  const coverHtml = (p, size) => p.th && STANDALONE ? `<span class="cover img" style="--s:${size}px;background-image:url('${esc(bggImg(p.th))}')" aria-hidden="true"></span>`
+    : p.c == null
     ? `<span class="cover none" style="--s:${size}px" aria-hidden="true">${DIE}</span>`
     : `<span class="cover" style="--s:${size}px;--x:${p.c % 10};--y:${Math.floor(p.c % 100 / 10)};background-image:url(${fileSrc(`covers/${Math.floor(p.c / 100)}.webp`)})" aria-hidden="true"></span>`;
   function gameRow(p) {
@@ -1083,9 +1097,9 @@ label.btn { cursor: pointer; position: relative; }
     for (const [id, g] of Object.entries(plan.cg || {})) {
       const k = OWN + id, have = prByKey.get(k);
       if (g.x) { if (have) { DATA.pr.splice(DATA.pr.indexOf(have), 1); prByKey.delete(k); changed = true; } continue; }
-      if (have && have.t === g.t && have.bggId === (g.b || null)) continue;
+      if (have && have.t === g.t && have.bggId === (g.b || null) && have.th === (g.th || null)) continue;
       const p = have || { k, e: null, p: "Your own entry", a: "", pl: "", ag: "", tm: "", pc: "", rd: "", m: "", g: [], d: "", s: [], c: null, src: "own" };
-      Object.assign(p, { t: g.t, o: g.t.toUpperCase(), bggId: g.b || null, _q: norm(g.t + " your own") });
+      Object.assign(p, { t: g.t, o: g.t.toUpperCase(), bggId: g.b || null, th: g.th || null, y: g.y || null, _q: norm(g.t + " your own") });
       if (!have) { DATA.pr.push(p); prByKey.set(k, p); }
       changed = true;
     }
@@ -1109,28 +1123,110 @@ label.btn { cursor: pointer; position: relative; }
   }
   const playedText = () => playedItems().map(({ p, st }) => `${p.t}${st.r ? "  " + starsText(st.r) : ""}${st.pd ? "  (played " + dayLabel(st.pd) + ")" : ""}${st.n ? "\n  " + st.n : ""}`).join("\n");
   const bggSearchUrl = q => "https://boardgamegeek.com/geeksearch.php?action=search&objecttype=boardgame&q=" + encodeURIComponent(q || "");
-  function openAddGame(name) {
+  // The BoardGameGeek catalogue (bgg.json, every ranked game, from BGG's daily rankings snapshot) is searched as you
+  // type, so a game is linked without copying links. Box pictures (bggimg.json) only where outside pictures may load.
+  let BGGCAT = null, bggCatP = null;
+  const bggKey = s => norm(s).replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim();
+  function bggCatalog() {
+    return bggCatP ||= loadJSON("bgg.json").then(d => {
+      BGGCAT = d.g.map(([id, n, y, r]) => ({ id, n, y, r, q: bggKey(n) }));
+      BGGCAT.from = d.from;
+      if (STANDALONE) loadJSON("bggimg.json").then(d => {
+        d.t.forEach((s, i) => { if (s && BGGCAT[i]) BGGCAT[i].th = s; });
+        document.querySelectorAll("[data-pickimg]").forEach(el => { const g = bggById(+el.dataset.pickimg); if (g?.th) el.outerHTML = bggCover(g, 40); });
+      }).catch(() => {});
+      return BGGCAT;
+    }).catch(e => { bggCatP = null; throw e; });
+  }
+  const bggById = id => BGGCAT?.find(g => g.id === id);
+  const bggImg = th => { const [a, b, c] = th.split("|"); return `https://cf.geekdo-images.com/${a}__micro/img/${b}=/fit-in/64x64/filters:strip_icc()/${c}`; };
+  const bggCover = (g, size) => STANDALONE && g.th ? `<span class="cover img" style="--s:${size}px;background-image:url('${esc(bggImg(g.th))}')" aria-hidden="true"></span>`
+    : `<span class="cover none" style="--s:${size}px" aria-hidden="true" data-pickimg="${g.id}">${DIE}</span>`;
+  // best matches first: the same name, then names starting with it, containing it, or holding all its words; better ranked first
+  function bggFind(q, n = 6) {
+    const k = bggKey(q); if (!k || !BGGCAT) return [];
+    const words = k.split(" "), hits = [];
+    for (const g of BGGCAT) {
+      const s = g.q === k ? 1000 : g.q.startsWith(k + " ") || g.q.startsWith(k) && k.length > 3 ? 500 : g.q.includes(" " + k) ? 320 : g.q.includes(k) && k.length > 3 ? 250 : words.length > 1 && words.every(w => g.q.includes(w)) ? 150 : 0;
+      if (s) hits.push([s - Math.log2(g.r) * 10, g, s]);
+    }
+    hits.sort((a, b) => b[0] - a[0]);
+    const out = hits.slice(0, n).map(h => h[1]);
+    // .sure: the one to link without asking: the same name, or the only game whose name starts with what you typed
+    out.sure = hits[0] && (hits[0][2] === 1000 || hits.length === 1 && hits[0][2] >= 500) ? hits[0][1] : null;
+    return out;
+  }
+  // a game already in the app with this BoardGameGeek id
+  const knownByBgg = id => id && DATA.pr.find(p => p.bgg?.id === id || p.bggId === id);
+  function pickRow(g, sel, attr) {
+    const known = knownByBgg(g.id);
+    return `<button class="pick" ${attr}="${g.id}" aria-pressed="${!!sel}">${bggCover(g, 40)}<span class="pmain"><span class="pname">${esc(g.n)}</span>
+      <span class="psub">${g.y ? g.y + " · " : ""}BGG #${g.r.toLocaleString("en")}${known ? ` · <strong>${known.src === "own" ? "already added" : "in the SPIEL list"}</strong>` : ""}</span></span>${sel ? `<span class="ptick">${TICK}</span>` : ""}</button>`;
+  }
+  // the add sheet: ADD.sel is the BoardGameGeek game it will be linked to; ADD.own is true once you picked yourself
+  const ADD = { sel: null, own: false, hits: [] };
+  function renderPicks() {
+    const box = $("own-picks"); if (!box) return;
+    const name = $("own-name")?.value || "";
+    if (!BGGCAT) { box.innerHTML = `<p class="fine">Looking it up on BoardGameGeek…</p>`; return; }
+    if (!bggKey(name)) { box.innerHTML = ""; return; }
+    ADD.hits = bggFind(name);
+    if (!ADD.own) ADD.sel = ADD.hits.sure;
+    if (ADD.sel && !ADD.hits.includes(ADD.sel)) ADD.hits.unshift(ADD.sel);
+    box.innerHTML = ADD.hits.length
+      ? `<p class="picklabel">${ADD.sel ? "Linked to BoardGameGeek. Not the right one? Pick another:" : "Which one is it on BoardGameGeek?"}</p>
+        <div class="picks">${ADD.hits.map(g => pickRow(g, g === ADD.sel, "data-pick")).join("")}
+        <button class="pick nopick" data-pick="0" aria-pressed="${!ADD.sel}"><span class="pmain"><span class="pname">None of these</span><span class="psub">Add it without a BoardGameGeek link</span></span>${!ADD.sel ? `<span class="ptick">${TICK}</span>` : ""}</button></div>`
+      : `<p class="fine">Not among BoardGameGeek's ranked games; very new or small games often are not. It is added with just its name.</p>`;
+  }
+  function openAddGame(name, pickId) {
     sheetOpen = { kind: "addgame" };
+    Object.assign(ADD, { sel: null, own: false, hits: [] });
     showSheet(`<div class="grab"></div><h2 id="sheet-title">Add a game</h2>
       <p class="meta">For a game that is on neither list. It is kept with your plan: mark it played, rate it and write what you thought.</p>
-      <label class="field"><span>Name</span><input id="own-name" value="${esc(name || "")}" autocomplete="off" maxlength="120"></label>
-      <label class="field"><span>BoardGameGeek link (optional)</span><input id="own-bgg" placeholder="https://boardgamegeek.com/boardgame/…" inputmode="url" autocomplete="off"></label>
-      <p class="fine"><a id="own-find" href="${esc(bggSearchUrl(name))}" target="_blank" rel="noopener">Find it on BoardGameGeek</a>, then copy the game's page link into the box above.</p>
+      <label class="field"><span>Name</span><input id="own-name" value="${esc(name || "")}" autocomplete="off" maxlength="120" enterkeyhint="search"></label>
+      <div id="own-picks" aria-live="polite"></div>
+      <details class="ownlink"><summary>Paste a BoardGameGeek link instead</summary>
+        <label class="field"><span>BoardGameGeek link</span><input id="own-bgg" placeholder="https://boardgamegeek.com/boardgame/…" inputmode="url" autocomplete="off"></label>
+        <p class="fine"><a id="own-find" href="${esc(bggSearchUrl(name))}" target="_blank" rel="noopener">Search BoardGameGeek</a>, then copy the game's page link into the box above. A link here wins over the pick above. The matches above are BoardGameGeek's ranked games${BGGCAT?.from ? ` of ${dayLabel(BGGCAT.from)}` : ""}.</p></details>
       <div class="actions"><button class="btn primary" data-own-add="played">${TICK}Add as played</button><button class="btn" data-own-add>Add</button></div>`, false);
-    setTimeout(() => $("own-name")?.focus(), 50);
+    renderPicks();
+    bggCatalog().then(() => {
+      if (sheetOpen?.kind !== "addgame") return;
+      if (pickId) { const g = bggById(pickId); if (g) { ADD.sel = g; ADD.own = true; } }
+      renderPicks();
+    }).catch(() => { const box = $("own-picks"); if (box) box.innerHTML = `<p class="fine">The BoardGameGeek list could not load (no signal?). Add the game by name, or paste its link below.</p>`; });
+    if (!pickId) setTimeout(() => $("own-name")?.focus(), 50);
   }
   function addOwnGame(played) {
-    const name = ($("own-name")?.value || "").trim().replace(/\s+/g, " ").slice(0, 120);
-    if (!name) { toast("Type the game's name first."); return $("own-name")?.focus(); }
-    const known = DATA.pr.find(p => norm(p.t) === norm(name));
-    if (known) { toast("That game is already in the list."); return openSheet("pr", known.k); }
+    let name = ($("own-name")?.value || "").trim().replace(/\s+/g, " ").slice(0, 120);
     const m = /(?:boardgame(?:expansion)?\/|^)(\d{1,7})(?:\/|$|\D)/.exec(($("own-bgg")?.value || "").trim());
+    const g = m ? bggById(+m[1]) || { id: +m[1] } : ADD.sel;
+    if (g?.n && (!name || ADD.sel === g)) name = g.n;
+    if (!name) { toast("Type the game's name first."); return $("own-name")?.focus(); }
+    const known = knownByBgg(g?.id) || DATA.pr.find(p => norm(p.t) === norm(name));
+    if (known) { toast(known.src === "own" ? "You added that game already." : "That game is already in the list."); return openSheet("pr", known.k); }
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 6), t = Date.now();
-    plan.cg ||= {}; plan.cg[id] = { t: name, b: m ? +m[1] : 0, at: t };
+    plan.cg ||= {}; plan.cg[id] = { t: name, b: g?.id || 0, ...(g?.y ? { y: g.y } : {}), ...(g?.th ? { th: g.th } : {}), at: t };
     ownGames();
     if (played) setEntry("pr", OWN + id, { pd: t }); else scheduleWrite();
     openSheet("pr", OWN + id);
     toast(played ? `${name} added and marked played.` : `${name} added.`);
+  }
+  // an own game without a BoardGameGeek link: its sheet offers the likely matches
+  function ownLinkPicks(p) {
+    bggCatalog().then(() => {
+      const box = $("own-linkpicks"); if (!box || sheetOpen?.id !== p.k) return;
+      const hits = bggFind(p.t, 3).filter(g => !knownByBgg(g.id));
+      box.innerHTML = hits.length ? `<p class="picklabel">Is it one of these on BoardGameGeek?</p><div class="picks">${hits.map(g => pickRow(g, false, "data-own-link")).join("")}</div>` : "";
+    }).catch(() => {});
+  }
+  function linkOwnGame(k, bggId) {
+    const cid = k.slice(OWN.length), cur = plan.cg[cid]; if (!cur) return;
+    const g = bggId && bggById(bggId);
+    plan.cg[cid] = { t: g ? g.n : cur.t, b: bggId || 0, ...(g?.y ? { y: g.y } : {}), ...(g?.th ? { th: g.th } : {}), at: Date.now() };
+    ownGames(); scheduleWrite(); openSheet("pr", k);
+    toast(g ? `Linked to ${g.n} on BoardGameGeek.` : "BoardGameGeek link removed.");
   }
 
   // ---------- Plan ----------
@@ -1353,8 +1449,12 @@ label.btn { cursor: pointer; position: relative; }
       }
       if (p.d) html += `<p class="desc">${esc(p.d)}</p>`;
       if (ex) html += `<h3>Shown by</h3><div class="list">${exRow(ex)}</div>`;
-      if (p.src === "own") html += `<p class="fine">You added this game yourself.${p.bggId ? ` <a href="https://boardgamegeek.com/boardgame/${p.bggId}" target="_blank" rel="noopener">Open on BoardGameGeek</a>.` : ` <a href="${esc(bggSearchUrl(p.t))}" target="_blank" rel="noopener">Find it on BoardGameGeek</a>.`}
-        <button class="linkbtn" data-own-del>Remove this game</button></p>`;
+      if (p.src === "own") {
+        if (!p.bggId) html += `<div id="own-linkpicks"></div>`;
+        html += `<p class="fine">You added this game yourself.${p.bggId ? ` <a href="https://boardgamegeek.com/boardgame/${p.bggId}" target="_blank" rel="noopener">Open on BoardGameGeek</a> · <button class="linkbtn inl" data-own-link="0">Wrong game? Unlink</button>` : ` <a href="${esc(bggSearchUrl(p.t))}" target="_blank" rel="noopener">Search BoardGameGeek</a>.`}
+          <button class="linkbtn" data-own-del>Remove this game</button></p>`;
+        if (!p.bggId) setTimeout(() => ownLinkPicks(p));
+      }
     }
     html += `<div class="note"><label for="note">My note</label><textarea id="note" placeholder="${kind === "pr" ? "What you thought of it, the price at the booth, demo times…" : "Price at the booth, demo times, who to ask for…"}">${esc(st.n || "")}</textarea></div>`;
     showSheet(html);
@@ -1481,6 +1581,8 @@ label.btn { cursor: pointer; position: relative; }
       const cur = entry(kind, id), r = cur.r === +rb.dataset.rate ? 0 : +rb.dataset.rate;
       setEntry(kind, id, { r, pd: cur.pd || (r ? Date.now() : 0) }); return openSheet(kind, id);
     }
+    const ol = e.target.closest("[data-own-link]");
+    if (ol) return linkOwnGame(id, +ol.dataset.ownLink);
     const od = e.target.closest("[data-own-del]");
     if (od) {
       if (od.dataset.confirm !== "1") { od.dataset.confirm = "1"; od.textContent = "Tap again to remove"; return; }
@@ -1555,9 +1657,17 @@ label.btn { cursor: pointer; position: relative; }
     document.body.classList.toggle("is-map", tab === "map");
     if (tab === "exhibitors") renderList(filteredExhibitors(), exRow, "exhibitors", "Try another spelling, a booth code like 3K120, or clear the hall and category filters.");
     else if (tab === "games") {
-      renderList(filteredGames(), gameRow, "new games", "Try a publisher, a designer, a mechanic like “worker placement”, or clear the filters.");
-      const q = ui.games.q.trim(); // a game on neither list: add it yourself
-      if (q) $("view").insertAdjacentHTML("afterbegin", `<p class="addown"><button class="btn sm" data-addgame="${esc(q)}">+ Not in the list? Add “${esc(q)}” as a game</button></p>`);
+      const games = filteredGames();
+      renderList(games, gameRow, "new games", "Try a publisher, a designer, a mechanic like “worker placement”, or clear the filters.");
+      const q = ui.games.q.trim(); // a game on neither list: add it yourself, with BoardGameGeek's matches at hand
+      if (q) {
+        $("view").insertAdjacentHTML("afterbegin", `<div class="addown"><button class="btn sm" data-addgame="${esc(q)}">+ Not in the list? Add “${esc(q)}” as a game</button><div id="quickadd"></div></div>`);
+        if (games.length < 3 && bggKey(q).length > 1) bggCatalog().then(() => {
+          const box = $("quickadd"); if (!box || ui.games.q.trim() !== q) return;
+          const hits = bggFind(q, 3).filter(g => !knownByBgg(g.id));
+          box.innerHTML = hits.length ? `<p class="picklabel">On BoardGameGeek:</p><div class="picks">${hits.map(g => pickRow(g, false, "data-quickadd")).join("")}</div>` : "";
+        }).catch(() => {});
+      }
     }
     else if (tab === "plan") renderPlan();
     else if (tab === "map") renderMap();
@@ -1596,9 +1706,18 @@ label.btn { cursor: pointer; position: relative; }
     if (ag) { e.stopPropagation(); return openAddGame(ag.dataset.addgame || ""); }
     const oa = e.target.closest("[data-own-add]");
     if (oa) { e.stopPropagation(); return addOwnGame(oa.dataset.ownAdd === "played"); }
+    const pk = e.target.closest("[data-pick]");
+    if (pk && sheetOpen?.kind === "addgame") { // your pick: the name becomes BoardGameGeek's
+      e.stopPropagation();
+      const g = bggById(+pk.dataset.pick) || null; ADD.sel = g; ADD.own = true;
+      if (g) { $("own-name").value = g.n; const a = $("own-find"); if (a) a.href = bggSearchUrl(g.n); }
+      return renderPicks();
+    }
+    const qa = e.target.closest("[data-quickadd]");
+    if (qa) { e.stopPropagation(); const g = bggById(+qa.dataset.quickadd); return openAddGame(g?.n || "", g?.id); }
   }, true);
-  document.addEventListener("input", e => { // the BoardGameGeek search link follows the name you type
-    if (e.target.id === "own-name") { const a = $("own-find"); if (a) a.href = bggSearchUrl(e.target.value); }
+  document.addEventListener("input", e => { // the BoardGameGeek matches follow the name you type
+    if (e.target.id === "own-name") { ADD.own = false; renderPicks(); const a = $("own-find"); if (a) a.href = bggSearchUrl(e.target.value); }
   });
   document.addEventListener("click", e => {
     const b = e.target.closest("[data-hallmap]"); if (!b) return;
