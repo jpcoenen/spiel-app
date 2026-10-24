@@ -1275,8 +1275,6 @@ label.btn { cursor: pointer; position: relative; }
   const atSpiel = id => (spielIds ||= new Set(DATA.pr.filter(p => p.bgg?.id).map(p => p.bgg.id))).has(id);
   // a game already in the app with this BoardGameGeek id
   const knownByBgg = id => id && DATA.pr.find(p => p.bgg?.id === id || p.bggId === id);
-  // BoardGameGeek's game is in the app already: at SPIEL, or added by you (linked, or by the same name)
-  const inApp = g => knownByBgg(g.id) || DATA.pr.some(p => p.src === "own" && !p.bggId && skey(p.t) === g.k);
   function pickRow(g, sel, attr, tail) {
     const known = knownByBgg(g.id);
     return `<button class="pick" ${attr}="${g.id}"${tail ? "" : ` aria-pressed="${!!sel}"`}>${bggCover(g, 40)}<span class="pmain"><span class="pname">${esc(g.n)}</span>
@@ -1301,8 +1299,8 @@ label.btn { cursor: pointer; position: relative; }
       + (mine.length ? `<p class="picklabel">Added by you${mineExact ? " already" : ""}</p><div class="picks">${mine.map(spielPick).join("")}</div>` : "");
     if (!BGGCAT) { box.innerHTML = spHtml + (bggCatP ? `<p class="fine">Looking it up on BoardGameGeek…</p>` : ""); return; }
     const found = bggFind(name, 6);
-    ADD.hits = found.filter(g => !inApp(g)); // the ones in the app are listed above
-    if (!ADD.own) ADD.sel = spExact || mineExact || !found.sure || inApp(found.sure) ? null : found.sure;
+    ADD.hits = found.filter(g => !knownByBgg(g.id)); // the ones in the app are listed above
+    if (!ADD.own) ADD.sel = spExact || mineExact || !found.sure || knownByBgg(found.sure.id) ? null : found.sure;
     if (ADD.sel && !ADD.hits.includes(ADD.sel)) ADD.hits.unshift(ADD.sel);
     box.innerHTML = spHtml + (ADD.hits.length
       ? `<p class="picklabel">${sp.length || mine.length ? "Something else? " : ""}${ADD.sel ? "Linked to BoardGameGeek. Not the right one? Pick another:" : "Which one is it on BoardGameGeek?"}</p>
@@ -1350,7 +1348,7 @@ label.btn { cursor: pointer; position: relative; }
   let bggMine = [];
   function fillBggMore(q, failed) {
     const box = $("bggmore"); if (!box || ui.games.q.trim() !== q) return;
-    const hits = failed === undefined ? bggFind(q, 12).filter(g => !inApp(g)) : [], more = box.dataset.more === "1";
+    const hits = failed === undefined ? bggFind(q, 12).filter(g => !knownByBgg(g.id)) : [], more = box.dataset.more === "1";
     const bgg = failed === null ? "" : hits.length
       ? `<p class="picklabel">On BoardGameGeek</p><div class="picks">${hits.slice(0, more ? 12 : 4).map(g => pickRow(g, false, "data-quickadd", "+")).join("")}</div>${hits.length > 4 && !more ? `<button class="linkbtn" data-bggmore>More from BoardGameGeek</button>` : ""}`
       : failed === false ? "" : `<p class="fine">${failed ? "BoardGameGeek's list could not load (no signal?)." : "None of BoardGameGeek's other ranked games matches."}</p>`;
