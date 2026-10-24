@@ -543,7 +543,7 @@ label.btn { cursor: pointer; position: relative; }
   // The page itself always comes from claude.ai (service workers are not allowed there), but what it loads after
   // that is kept in IndexedDB: the data files, the hall plans and the cover sheets. With the page open, or on a fair
   // network too slow to finish a download, the app runs from that copy.
-  const DATA_V = "20261024a"; // bump whenever data.json or maps.json is republished
+  const DATA_V = "20261024b"; // bump whenever data.json or maps.json is republished
   const IMG_V = "20261022c";  // bump whenever the hall plans or cover sheets are republished
   const IDB = (() => {
     let dbp = null;
@@ -1133,7 +1133,7 @@ label.btn { cursor: pointer; position: relative; }
         <p class="fine">Booth codes start with the hall number, then the aisle letter: booth 3K120 is in Hall 3, aisle K. FG1–FG3 are outdoor areas. Tap a hall above, or a booth code in any detail view, to see it on the map.</p></div>
       <div class="card" id="offcard">${offlineCardHtml()}</div>
       <div class="card"><h2>About this app</h2>
-        <p class="fine">Spielplan is an unofficial companion and is not made by or affiliated with SPIEL Essen or Friedhelm Merz Verlag. Exhibitor and novelty data is a snapshot of the public lists on spiel-essen.de${upd ? ", taken " + upd : ""}: ${DATA.ex.length.toLocaleString("en")} exhibitors and ${DATA.pr.length.toLocaleString("en")} new games. Booths can still change, so check the official site when in doubt.</p></div>
+        <p class="fine">Spielplan is an unofficial companion and is not made by or affiliated with SPIEL Essen or Friedhelm Merz Verlag. Exhibitor and novelty data is a snapshot of the public lists on spiel-essen.de${upd ? ", taken " + upd : ""}: ${DATA.ex.length.toLocaleString("en")} exhibitors and ${DATA.pr.length.toLocaleString("en")} new games. Booths can still change, so check the official site when in doubt. The GPS position of the halls comes from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>.</p></div>
       <p class="planfoot"><button class="linkbtn" data-open-note>Waar heeft Mick zijn sleutel opgeborgen? En andere notities</button></p>`;
   }
 
@@ -2946,6 +2946,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     history.replaceState(null, "", location.pathname);
   }
   IDB.get("gps:pairs").then(v => { if (v && !GPS.pairs.size) { GPS.pairs = new Map(v); mapsReady.then(gpsFit); } });
+  mapsReady.then(() => gpsFit()); // the real-map position works without any line-up points
   const RAD = Math.PI / 180, TURN = 38 * RAD;
   // a point on a hall plan -> the fairground overview (the halls sit upright on the overview turned 38 degrees)
   function toOverview(map, x, y) {
@@ -2958,15 +2959,17 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
   // the overview -> the hall the point is in, or the nearest one, and the point on its plan
   function fromOverview(ox, oy) {
     const ca = Math.cos(TURN), sa = Math.sin(TURN), tx = ca * ox + sa * oy, ty = -sa * ox + ca * oy;
-    let best = null, bd = Infinity;
-    for (const [id, [k, cx, cy, pcx, pcy]] of Object.entries(MAPS.geo.halls)) {
+    // inside a hall's own outline first; the shown part of a plan also reaches over its doors into the next building
+    let best = null, bd = Infinity, inBox = null;
+    for (const [id, [k, cx, cy, pcx, pcy, bx0, by0, bx1, by1]] of Object.entries(MAPS.geo.halls)) {
       if (!MAPS.maps[id]) continue;
       const x = pcx + (tx - (ca * cx + sa * cy)) / k, y = pcy + (ty - (-sa * cx + ca * cy)) / k;
       const [x0, y0, x1, y1] = MAPS.fair?.halls[id]?.crop || [0, 0, MAPS.maps[id].w, MAPS.maps[id].h];
       const d = Math.hypot(Math.max(x0 - x, 0, x - x1), Math.max(y0 - y, 0, y - y1)) * k; // overview pixels outside the hall
       if (d < bd) { bd = d; best = { map: id, x, y, k, out: d }; }
+      if (bx1 != null && !inBox && x >= bx0 && x <= bx1 && y >= by0 && y <= by1) inBox = { map: id, x, y, k, out: 0 };
     }
-    return best;
+    return inBox || best;
   }
   // metres east and south of an origin
   const enu = (lat, lon, o) => [(lon - o[1]) * RAD * 6371000 * Math.cos(o[0] * RAD), (o[0] - lat) * RAD * 6371000];
@@ -2976,8 +2979,8 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     const seen = new Set();
     const pts = [...GPS.pairs.values(), ...GPS.local].filter(p => p && p.acc <= 40 && MAPS.maps[p.map] && !seen.has(p.t + ":" + p.lat) && seen.add(p.t + ":" + p.lat))
       .map(p => ({ lat: p.lat, lon: p.lon, acc: p.acc, o: toOverview(p.map, p.x, p.y) })).filter(p => p.o);
-    if (pts.length < 2) return;
-    const o = [pts.reduce((s, p) => s + p.lat, 0) / pts.length, pts.reduce((s, p) => s + p.lon, 0) / pts.length];
+    if (pts.length < 2 && !MAPS.geo.ref) return;
+    const o = pts.length ? [pts.reduce((s, p) => s + p.lat, 0) / pts.length, pts.reduce((s, p) => s + p.lon, 0) / pts.length] : [0, 0];
     // weighted least squares for overview = [a -b; b a] (east, south) + t
     const solve = ps => {
       let sw = 0, me = 0, ms = 0, mu = 0, mv = 0;
@@ -2992,6 +2995,19 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       return { o, a, b, tu: mu - (a * me - b * ms), tv: mv - (b * me + a * ms), n: ps.length };
     };
     const miss = (f, p) => { const [x, y] = enu(p.lat, p.lon, f.o); return Math.hypot(f.a * x - f.b * y + f.tu - p.o[0], f.b * x + f.a * y + f.tv - p.o[1]) / Math.hypot(f.a, f.b); };
+    // the real-world position from OpenStreetMap's hall outlines; your own line-up points only shift it, by their
+    // average difference, more as there are more of them (it corrects for how this phone's GPS is off here)
+    if (MAPS.geo.ref) {
+      const r = MAPS.geo.ref, f = { o: r.o, a: r.a, b: r.b, tu: r.tu, tv: r.tv, n: pts.length, ref: true, rms: 0 };
+      if (pts.length) {
+        let sw = 0, du = 0, dv = 0;
+        for (const p of pts) { const w = 1 / Math.max(5, p.acc) ** 2, [x, y] = enu(p.lat, p.lon, f.o); sw += w; du += w * (p.o[0] - (f.a * x - f.b * y + f.tu)); dv += w * (p.o[1] - (f.b * x + f.a * y + f.tv)); }
+        const k = pts.length / (pts.length + 0.5); f.tu += du / sw * k; f.tv += dv / sw * k;
+        f.rms = Math.sqrt(pts.reduce((s, p) => s + miss(f, p) ** 2, 0) / pts.length);
+      }
+      GPS.fit = f;
+      return;
+    }
     let f = solve(pts); if (!f) return;
     if (pts.length >= 4) { // drop pairs that disagree with the rest
       const r = pts.map(p => miss(f, p)), med = [...r].sort((a, b) => a - b)[r.length >> 1];
@@ -3063,7 +3079,8 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     const best = Math.min(...list.map(h => h.acc));
     // the spread of the readings, and no better than the best one or than averaging allows
     const o = [lat / sw, lon / sw], spread = Math.sqrt(list.reduce((s, h) => { const [x, y] = enu(h.lat, h.lon, o); return s + x * x + y * y; }, 0) / list.length);
-    return { lat: o[0], lon: o[1], acc: Math.round(Math.max(best / Math.sqrt(list.length), Math.min(best, spread), 3)), t: now, n: list.length };
+    // indoor GPS errors are shared between readings, so averaging helps little: no better than most of the best one
+    return { lat: o[0], lon: o[1], acc: Math.round(Math.max(best * 0.75, spread, 4)), t: now, n: list.length };
   }
   // "I'm here": stand still while the app collects readings for ten seconds, then their mean is the line-up point
   function gpsCollect(spot) {
@@ -3111,15 +3128,17 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     try { localStorage.setItem(LS_KEY + "-gpsfix", JSON.stringify(GPS.local.slice(-40))); } catch {}
     gpsFit(); drawMarks();
     const n = [...GPS.pairs.values()].length + GPS.local.length;
+    if (GPS.fit?.ref) { if (!quiet) toast("Fine-tuned: the dot now allows for how your phone's GPS is off around here.", 5000); return; }
     if (!quiet || GPS.fit && !before) toast(GPS.fit ? `GPS lined up from ${GPS.fit.n} points.${GPS.fit.n < 4 ? " More points, spread over the halls, make it more exact." : ""}` : n < 2 ? "Saved. Do the same at a second spot, at least 50 m away." : "Saved. The spots are still too close together: add one at least 50 m from the others.", 6000);
   }
   function gpsLegend() {
     if (GPS.collect) return `<div class="line"><span class="gpsdot"></span>Hold still: measuring your GPS position… <span id="gpsleft"></span></div>`;
-    if (GPS.cal) return `<strong>Line up GPS</strong>Move the map until the cross is where you are standing, then tap “I'm here”.${GPS.fix ? ` GPS: ±${GPS.fix.acc} m.` : " Waiting for GPS…"}
+    if (GPS.cal) return `<strong>${GPS.fit?.ref ? "Fine-tune GPS" : "Line up GPS"}</strong>Move the map until the cross is where you are standing, then tap “I'm here”.${GPS.fix ? ` GPS: ±${GPS.fix.acc} m.` : " Waiting for GPS…"}
       <div class="legendbtns"><button class="btn sm primary" data-gps-here>I'm here</button><button class="btn sm" data-gps-cancel>Cancel</button></div>`;
     if (!GPS.on) return "";
     if (!GPS.fix) return `<div class="line">GPS: waiting for a position…</div>`;
     const where = GPS.fit && GPS.where ? (GPS.where.out * Math.hypot(GPS.fit.a, GPS.fit.b) ** -1 > 15 ? ` · outside, near ${esc(MAPS.maps[GPS.where.map].n)}` : ` · ${esc(MAPS.maps[GPS.where.map].n)}`) : "";
+    if (GPS.fit?.ref) return `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m${where}. Placed on the real map${GPS.fit.n ? `, fine-tuned with ${GPS.fit.n} ${GPS.fit.n === 1 ? "point" : "points"}` : ""}. If the dot sits off where you stand, fine-tune it.</div><div class="legendbtns"><button class="btn sm" data-gps-cal>Fine-tune here</button></div>`;
     return GPS.fit
       ? `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m${where}. Lined up from ${GPS.fit.n} points${GPS.fit.rms > 15 ? " (they disagree, so rough)" : GPS.fit.n < 4 ? " (more points, spread out, make it more exact)" : ""}.</div><div class="legendbtns"><button class="btn sm" data-gps-cal>Add a line-up point</button></div>`
       : `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m, but the map is not lined up with GPS yet. Put the cross where you stand and tap “I'm here”, at two spots at least 50 m apart. Ceiling photos also line it up.</div><div class="legendbtns"><button class="btn sm primary" data-gps-cal>Line up here</button></div>`;
