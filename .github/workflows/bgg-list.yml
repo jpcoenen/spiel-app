@@ -1,0 +1,39 @@
+# Keeps the BoardGameGeek list behind "Add a game" and the search current: every Monday it takes the newest daily
+# snapshot of BGG's rankings (github.com/beefsack/bgg-ranking-historicals), rebuilds bgg.json and bggimg.json, and
+# commits them when they changed. Run it by hand from the Actions tab with "Run workflow".
+name: Refresh the BoardGameGeek list
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: write
+  pages: write
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the newest rankings snapshot
+        run: |
+          git clone --depth 1 --filter=blob:none --no-checkout https://github.com/beefsack/bgg-ranking-historicals.git "$RUNNER_TEMP/rank"
+          latest=$(git -C "$RUNNER_TEMP/rank" ls-tree --name-only HEAD | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}\.csv$' | sort | tail -1)
+          test -n "$latest"
+          git -C "$RUNNER_TEMP/rank" checkout HEAD -- "$latest"
+          echo "CSV=$RUNNER_TEMP/rank/$latest" >> "$GITHUB_ENV"
+      - name: Rebuild the list
+        run: |
+          python3 tools/bgg_catalog.py "$CSV" .
+          # a broken snapshot must not empty the search: expect most of the usual 30,000 games
+          python3 -c "import json,sys; n=len(json.load(open('bgg.json'))['g']); print(n, 'games'); sys.exit(n < 20000)"
+      - name: Commit and publish when changed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- bgg.json bggimg.json; then echo "No change"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898341+github-actions[bot]@users.noreply.github.com"
+          git add bgg.json bggimg.json
+          git commit -m "BoardGameGeek list of $(basename "$CSV" .csv)"
+          git push
+          gh api -X POST "repos/${{ github.repository }}/pages/builds" || echo "Pages builds on its own"

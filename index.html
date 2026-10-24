@@ -246,6 +246,11 @@ nav.tabs .badge {
 .addown { margin: 0 0 10px; }
 .cover.img { background-size: cover; background-position: center; background-color: var(--bg); }
 .picklabel { margin: 4px 0 6px; font-size: 0.85rem; font-weight: 700; }
+.pgo { flex: none; color: var(--muted); font-size: 1.3rem; font-weight: 700; padding: 0 4px; }
+.srcpill { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 1px 6px; border-radius: 999px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+.srcpill.spiel { background: var(--accent); color: #fff; border-color: var(--accent); }
+.bggmore { margin-top: 18px; }
+.sechead { font-size: 1rem; margin: 0 0 8px; } .sechead small { color: var(--muted); font-weight: 400; }
 .picks { display: grid; gap: 6px; margin-bottom: 12px; }
 .pick { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 6px 10px 6px 6px; min-height: 52px;
   border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font: inherit; }
@@ -574,6 +579,95 @@ label.btn { cursor: pointer; position: relative; }
 
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const norm = s => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+  // ---------- Search that forgives ----------
+  // Words in any order, the last one still being typed, small typos ("wingspam", "spirt iland"), missing spaces
+  // ("tickettoride") and accents all still find the game. Each distinct word points to the items holding it, so a
+  // search through 31,000 BoardGameGeek names compares some 25,000 words rather than every name.
+  const skey = s => norm(s).replace(/ß/g, "ss").replace(/&/g, " and ").replace(/['’`´]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  const STOPWORDS = new Set("the a an of and to in on for at der die das den und von im le la les de des du et il el".split(" "));
+  // the edit distance of a and the first bn letters of b (two swapped letters count once), or k + 1 as soon as it is
+  // sure to be more than k
+  const ED = [new Int32Array(66), new Int32Array(66), new Int32Array(66)];
+  function editDist(a, b, k, bn = b.length) {
+    const m = a.length, n = Math.min(bn, b.length); if (Math.abs(m - n) > k || m > 64 || n > 64) return k + 1;
+    let pp = ED[0], p = ED[1], c = ED[2];
+    for (let j = 0; j <= n; j++) p[j] = j;
+    for (let i = 1; i <= m; i++) {
+      c[0] = i; let low = i;
+      for (let j = 1; j <= n; j++) {
+        let v = Math.min(p[j] + 1, c[j - 1] + 1, p[j - 1] + (a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1));
+        if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) v = Math.min(v, pp[j - 2] + 1);
+        c[j] = v; if (v < low) low = v;
+      }
+      if (low > k) return k + 1;
+      const t = pp; pp = p; p = c; c = t;
+    }
+    return p[n];
+  }
+  // the letters in a word as bits: a word with more than k letters the other lacks is more than k edits away
+  const letterMask = w => { let m = 0; for (let i = 0; i < w.length; i++) { const c = w.charCodeAt(i); m |= 1 << (c >= 97 ? c - 97 : 26 + c % 6); } return m; };
+  const bitCount = x => { let n = 0; while (x) { x &= x - 1; n++; } return n; };
+  // how well a typed word q (letters qm) matches a word w (letters wm) of a name, 0 to 1; last: the word is still being
+  // typed, so its start is enough. A match that needs a typo forgiven comes back negative.
+  function wordScore(q, qm, w, wm, last) {
+    if (q === w) return 1;
+    const n = q.length;
+    if (w.startsWith(q)) return last ? 0.9 : n >= 3 ? 0.75 : 0;
+    if (n >= 4 && w.includes(q)) return 0.5;
+    if (n < 3 || /\d/.test(q)) return 0; // very short words and numbers must be right
+    const k = n >= 8 ? 2 : 1;
+    if (bitCount(qm & ~wm) > k) return 0;
+    let d = editDist(q, w, k);
+    if (d <= k) return -((n === 3 ? 0.7 : 0.8) - 0.15 * d);
+    if (last && w.length > n) { // a typo in a word not finished yet
+      d = Math.min(editDist(q, w, k, n - 1), editDist(q, w, k, n), editDist(q, w, k, n + 1));
+      if (d <= k) return -(0.7 - 0.15 * d);
+    }
+    return 0;
+  }
+  // items: [[name, other text]]; the other text (publisher, designer, booth...) counts for less than the name
+  function searchIndex(items) {
+    const ix = { n: items.length, t: new Map(), o: new Map(), key: [], c: [], wc: [] };
+    const add = (m, w, i) => { const l = m.get(w); if (!l) m.set(w, [i]); else if (l[l.length - 1] !== i) l.push(i); };
+    items.forEach(([t, o], i) => {
+      const k = skey(t), ws = k.split(" ").filter(Boolean);
+      ix.key.push(k); ix.c.push(k.replace(/ /g, "")); ix.wc.push(ws.length);
+      ws.forEach(w => add(ix.t, w, i));
+      if (o) for (const w of skey(o).split(" ")) if (w && !ws.includes(w)) add(ix.o, w, i);
+    });
+    for (const m of [ix.t, ix.o]) for (const [w, ids] of m) m.set(w, { ids, m: letterMask(w) });
+    return ix;
+  }
+  // the items matching q as [[index, score, typo]], best first; the score runs from about 0.4 (loose) to 1.5 (the very
+  // name); typo: true when a word only matched with a typo forgiven
+  function searchRun(ix, q) {
+    const key = skey(q); if (!key) return [];
+    const typing = !/\s$/.test(q);
+    let qs = key.split(" "); const sig = qs.filter(w => !STOPWORDS.has(w)); if (sig.length) qs = sig;
+    const acc = new Map();
+    qs.forEach((w, qi) => {
+      const last = typing && qi === qs.length - 1, best = new Map(), qm = letterMask(w);
+      for (const [m, f] of [[ix.t, 1], [ix.o, 0.6]]) for (const [tok, e] of m) {
+        const s = wordScore(w, qm, tok, e.m, last) * f; if (!s) continue;
+        for (const i of e.ids) if (!(Math.abs(best.get(i)) >= Math.abs(s))) best.set(i, s);
+      }
+      for (const [i, s] of best) { const a = acc.get(i); if (a) { a[0] += Math.abs(s); a[1]++; a[2] ||= s < 0; } else acc.set(i, [Math.abs(s), 1, s < 0]); }
+    });
+    const need = qs.length >= 3 ? qs.length - 1 : qs.length, out = []; // with three words or more, one may miss
+    for (const [i, [sum, hit, typo]] of acc) if (hit >= need) out.push([i, sum / qs.length, typo]);
+    const cq = key.replace(/ /g, ""); // spaces typed differently: "tickettoride", "sky haven" for "Skyhaven"
+    if (cq.length >= 4) {
+      const have = new Set(out.map(r => r[0]));
+      for (let i = 0; i < ix.n; i++) if (!have.has(i) && ix.c[i].includes(cq)) out.push([i, ix.c[i].startsWith(cq) ? 0.85 : 0.65, false]);
+    }
+    const res = out.some(r => !r[2]) ? out.filter(r => !r[2]) : out; // typos are forgiven only when nothing matches as typed
+    for (const r of res) { // the very name first, then names starting with it; long names with few words matched later
+      const k = ix.key[r[0]];
+      r[1] += k === key ? 0.5 : k.startsWith(key) ? 0.15 : 0;
+      r[1] -= 0.02 * Math.max(0, ix.wc[r[0]] - qs.length);
+    }
+    return res.sort((a, b) => b[1] - a[1]);
+  }
   const $ = id => document.getElementById(id);
 
   // ---------- Offline ----------
@@ -993,13 +1087,29 @@ label.btn { cursor: pointer; position: relative; }
   });
 
   // ---------- Lists ----------
+  // the exhibitors and the games, indexed for search when first needed (the games again when your own ones change)
+  let PRIX = null, EXIX = null, SCORES = null;
+  const prIndex = () => PRIX ||= searchIndex(DATA.pr.map(p => [p.t, p._q]));
+  const exIndex = () => EXIX ||= searchIndex(DATA.ex.map(e => [e.n, e._q]));
+  // item -> how well it matches; every word somewhere in its text (the old rule) still counts, as a loose match
+  function searchScores(ix, list, q) {
+    if (SCORES?.ix === ix && SCORES.q === q) return SCORES.m;
+    const m = new Map(), words = norm(q).split(/\s+/).filter(Boolean);
+    for (const [i, sc] of searchRun(ix, q)) m.set(list[i], sc);
+    for (const x of list) if (!m.has(x) && words.every(w => x._q.includes(w))) m.set(x, 0.45);
+    if (list === DATA.pr) for (const [p, sc] of m) m.set(p, sc + 0.01 * Math.log2(1 + (p.bgg?.th || 0)) - (p.src === "own" ? 0.25 : 0)); // SPIEL's own games first, liked ones a little ahead
+    SCORES = { ix, q, m };
+    return m;
+  }
+  const gameScores = q => searchScores(prIndex(), DATA.pr, q);
   function filteredExhibitors() {
-    const s = ui.exhibitors, words = norm(s.q).split(/\s+/).filter(Boolean);
-    return DATA.ex.filter(e =>
+    const s = ui.exhibitors, sc = s.q.trim() ? searchScores(exIndex(), DATA.ex, s.q) : null;
+    const out = DATA.ex.filter(e =>
       (!s.hall || e.s.some(x => x[0] === s.hall)) &&
       (!s.cat || e.k.includes(s.cat)) &&
       starMatch(entry("ex", e.i), ui.prio) &&
-      words.every(w => e._q.includes(w)));
+      (!sc || sc.has(e)));
+    return sc ? out.sort((a, b) => sc.get(b) - sc.get(a)) : out; // best match first
   }
   // BoardGameGeek tags: "demo" or "c:<category>" / "m:<mechanic>", most used first
   let bggTags = null;
@@ -1024,14 +1134,15 @@ label.btn { cursor: pointer; position: relative; }
     return (tag[0] === "c" ? b.cat : b.mec)?.includes(tag.slice(2)) || false;
   }
   function filteredGames() {
-    const s = ui.games, words = norm(s.q).split(/\s+/).filter(Boolean);
+    const s = ui.games, sc = s.q.trim() ? gameScores(s.q) : null;
     const out = DATA.pr.filter(p =>
       (!s.hall || p.s.some(x => x[0] === s.hall)) &&
       (!s.genre || p.g.includes(s.genre)) &&
       hasBggTag(p, s.tag) &&
       (!s.minth || p.bgg && p.bgg.th >= Math.max(0, s.minth)) &&
       starMatch(entry("pr", p.k), ui.prio) &&
-      words.every(w => p._q.includes(w)));
+      (!sc || sc.has(p)));
+    if (sc && s.sort === "az") out.sort((a, b) => sc.get(b) - sc.get(a)); // searching: best match first
     if (s.sort === "th") out.sort((a, b) => (b.bgg?.th ?? -1) - (a.bgg?.th ?? -1));
     if (s.sort === "mh") out.sort((a, b) => (b.bgg?.mh ?? -1) - (a.bgg?.mh ?? -1));
     return out;
@@ -1066,7 +1177,7 @@ label.btn { cursor: pointer; position: relative; }
     const bits = [p.p, p.pl && p.pl + " pl.", p.tm && p.tm.replace(" minutes", " min")].filter(Boolean).join(" · ");
     return `<div class="row game${st.v ? " visited" : ""}" data-kind="pr" data-id="${esc(p.k)}" role="button" tabindex="0">
       ${coverHtml(p, 64)}
-      <div class="main"><div class="name">${prioPill(st)}${esc(p.t)}</div><div class="sub">${esc(bits)}</div><div class="chipline">${standChip(p.s[0], p.s.length - 1)}${p.bgg ? `<span class="thumbs" title="Thumbs up on BoardGameGeek">${THUMB}${p.bgg.th.toLocaleString("en")}</span>` : ""}${p.bgg?.demo ? `<span class="tag">Demo only</span>` : ""}${st.pd || st.r ? `<span class="playedtag">${TICK}${st.r ? starsText(st.r).replace(/☆/g, "") : "played"}</span>` : ""}</div></div>
+      <div class="main"><div class="name">${prioPill(st)}${esc(p.t)}</div><div class="sub">${esc(bits)}</div><div class="chipline">${standChip(p.s[0], p.s.length - 1)}${p.src === "own" ? `<span class="srcpill">Your own · not at SPIEL</span>` : ""}${p.bgg ? `<span class="thumbs" title="Thumbs up on BoardGameGeek">${THUMB}${p.bgg.th.toLocaleString("en")}</span>` : ""}${p.bgg?.demo ? `<span class="tag">Demo only</span>` : ""}${st.pd || st.r ? `<span class="playedtag">${TICK}${st.r ? starsText(st.r).replace(/☆/g, "") : "played"}</span>` : ""}</div></div>
       <button class="star" data-star aria-pressed="${!!st.s}" aria-label="Star ${esc(p.t)}">${STAR}</button>
     </div>`;
   }
@@ -1074,7 +1185,7 @@ label.btn { cursor: pointer; position: relative; }
     currentItems = items;
     const v = $("view");
     if (!items.length) { v.innerHTML = `<div class="list"><div class="empty"><strong>No ${noun} match</strong>${emptyMsg}</div></div>`; return; }
-    v.innerHTML = `<p class="count">${items.length.toLocaleString("en")} ${items.length === 1 ? noun.replace(/s$/, "") : noun}</p><div class="list" id="list">${items.slice(0, shown).map(rowFn).join("")}</div><div class="sentinel" id="sentinel"></div>`;
+    v.innerHTML = `<p class="count">${items.length.toLocaleString("en")} ${items.length === 1 ? noun.replace(/s\b/, "") : noun}</p><div class="list" id="list">${items.slice(0, shown).map(rowFn).join("")}</div><div class="sentinel" id="sentinel"></div>`;
     observer?.disconnect();
     if (shown < items.length) {
       observer = new IntersectionObserver(es => {
@@ -1103,7 +1214,7 @@ label.btn { cursor: pointer; position: relative; }
       if (!have) { DATA.pr.push(p); prByKey.set(k, p); }
       changed = true;
     }
-    if (changed) DATA.pr.sort((a, b) => a.o.localeCompare(b.o, "en", { numeric: true }));
+    if (changed) { DATA.pr.sort((a, b) => a.o.localeCompare(b.o, "en", { numeric: true })); PRIX = null; SCORES = null; }
   }
   const dayLabel = t => new Date(t).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
   const starsText = r => r ? "★".repeat(r) + "☆".repeat(5 - r) : "";
@@ -1126,58 +1237,73 @@ label.btn { cursor: pointer; position: relative; }
   // The BoardGameGeek catalogue (bgg.json, every ranked game, from BGG's daily rankings snapshot) is searched as you
   // type, so a game is linked without copying links. Box pictures (bggimg.json) only where outside pictures may load.
   let BGGCAT = null, bggCatP = null;
-  const bggKey = s => norm(s).replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim();
   function bggCatalog() {
     return bggCatP ||= loadJSON("bgg.json").then(d => {
-      BGGCAT = d.g.map(([id, n, y, r]) => ({ id, n, y, r, q: bggKey(n) }));
-      BGGCAT.from = d.from;
+      const cat = d.g.map(([id, n, y, r]) => ({ id, n, y, r }));
+      cat.ix = searchIndex(cat.map(g => [g.n]));
+      cat.forEach((g, i) => g.k = cat.ix.key[i]);
+      cat.byId = new Map(cat.map(g => [g.id, g]));
+      cat.from = d.from;
+      BGGCAT = cat;
       if (STANDALONE) loadJSON("bggimg.json").then(d => {
-        d.t.forEach((s, i) => { if (s && BGGCAT[i]) BGGCAT[i].th = s; });
+        if (d.from !== cat.from) return; // one list newer than the other: pictures next time
+        d.t.forEach((s, i) => { if (s && cat[i]) cat[i].th = s; });
         document.querySelectorAll("[data-pickimg]").forEach(el => { const g = bggById(+el.dataset.pickimg); if (g?.th) el.outerHTML = bggCover(g, 40); });
       }).catch(() => {});
-      return BGGCAT;
+      return cat;
     }).catch(e => { bggCatP = null; throw e; });
   }
-  const bggById = id => BGGCAT?.find(g => g.id === id);
+  const bggById = id => BGGCAT?.byId.get(id);
   const bggImg = th => { const [a, b, c] = th.split("|"); return `https://cf.geekdo-images.com/${a}__micro/img/${b}=/fit-in/64x64/filters:strip_icc()/${c}`; };
   const bggCover = (g, size) => STANDALONE && g.th ? `<span class="cover img" style="--s:${size}px;background-image:url('${esc(bggImg(g.th))}')" aria-hidden="true"></span>`
     : `<span class="cover none" style="--s:${size}px" aria-hidden="true" data-pickimg="${g.id}">${DIE}</span>`;
-  // best matches first: the same name, then names starting with it, containing it, or holding all its words; better ranked first
+  // BoardGameGeek's games for a search, best first, better ranked ones a little ahead, the far weaker ones left out.
+  // .sure: the one to link without asking: the very name, or the only name starting with what you typed
   function bggFind(q, n = 6) {
-    const k = bggKey(q); if (!k || !BGGCAT) return [];
-    const words = k.split(" "), hits = [];
-    for (const g of BGGCAT) {
-      const s = g.q === k ? 1000 : g.q.startsWith(k + " ") || g.q.startsWith(k) && k.length > 3 ? 500 : g.q.includes(" " + k) ? 320 : g.q.includes(k) && k.length > 3 ? 250 : words.length > 1 && words.every(w => g.q.includes(w)) ? 150 : 0;
-      if (s) hits.push([s - Math.log2(g.r) * 10, g, s]);
-    }
-    hits.sort((a, b) => b[0] - a[0]);
-    const out = hits.slice(0, n).map(h => h[1]);
-    // .sure: the one to link without asking: the same name, or the only game whose name starts with what you typed
-    out.sure = hits[0] && (hits[0][2] === 1000 || hits.length === 1 && hits[0][2] >= 500) ? hits[0][1] : null;
+    const key = skey(q); if (!BGGCAT || key.length < 2) return [];
+    const r = searchRun(BGGCAT.ix, q).map(([i, sc]) => [BGGCAT[i], sc - 0.03 * Math.log2(BGGCAT[i].r)]).sort((a, b) => b[1] - a[1]);
+    if (!r.length) return [];
+    const out = r.filter(x => x[1] >= r[0][1] - 0.55).slice(0, n).map(x => x[0]);
+    // the very name, unless a game starting with it is far better known ("heat": Heat 2015, or Heat: Pedal to the Metal?)
+    const starts = key.length >= 4 ? r.filter(x => x[0].k.startsWith(key)) : [], exact = r.find(x => x[0].k === key)?.[0];
+    out.sure = exact ? (starts.some(x => x[0].r * 10 < exact.r) ? null : exact) : starts.length === 1 ? starts[0][0] : null;
+    if (out.sure && !out.includes(out.sure)) out.unshift(out.sure);
     return out;
   }
+  // BoardGameGeek ids of the games at SPIEL
+  let spielIds = null;
+  const atSpiel = id => (spielIds ||= new Set(DATA.pr.filter(p => p.bgg?.id).map(p => p.bgg.id))).has(id);
   // a game already in the app with this BoardGameGeek id
   const knownByBgg = id => id && DATA.pr.find(p => p.bgg?.id === id || p.bggId === id);
-  function pickRow(g, sel, attr) {
+  function pickRow(g, sel, attr, tail) {
     const known = knownByBgg(g.id);
-    return `<button class="pick" ${attr}="${g.id}" aria-pressed="${!!sel}">${bggCover(g, 40)}<span class="pmain"><span class="pname">${esc(g.n)}</span>
-      <span class="psub">${g.y ? g.y + " · " : ""}BGG #${g.r.toLocaleString("en")}${known ? ` · <strong>${known.src === "own" ? "already added" : "in the SPIEL list"}</strong>` : ""}</span></span>${sel ? `<span class="ptick">${TICK}</span>` : ""}</button>`;
+    return `<button class="pick" ${attr}="${g.id}"${tail ? "" : ` aria-pressed="${!!sel}"`}>${bggCover(g, 40)}<span class="pmain"><span class="pname">${esc(g.n)}</span>
+      <span class="psub">${g.y ? g.y + " · " : ""}BGG #${g.r.toLocaleString("en")}${known ? ` · <strong>${known.src === "own" ? "added by you" : "at SPIEL"}</strong>` : ""}</span></span>${sel ? `<span class="ptick">${TICK}</span>` : tail ? `<span class="pgo" aria-hidden="true">${tail}</span>` : ""}</button>`;
   }
+  // a SPIEL game among the matches: tapping opens it
+  const spielPick = p => `<button class="pick spiel" data-openpr="${esc(p.k)}">${coverHtml(p, 40)}<span class="pmain"><span class="pname">${esc(p.t)}</span>
+    <span class="psub"><span class="srcpill spiel">SPIEL 2026</span> ${p.s[0]?.[1] ? "booth " + esc(p.s[0][1]) : esc(p.p || "")}</span></span><span class="pgo" aria-hidden="true">›</span></button>`;
+  // SPIEL's games matching a name well, best first
+  const spielMatches = (q, n) => skey(q).length < 2 ? [] : [...gameScores(q)].filter(([p, sc]) => p.src !== "own" && sc >= 0.6).sort((a, b) => b[1] - a[1]).slice(0, n).map(x => x[0]);
   // the add sheet: ADD.sel is the BoardGameGeek game it will be linked to; ADD.own is true once you picked yourself
   const ADD = { sel: null, own: false, hits: [] };
   function renderPicks() {
     const box = $("own-picks"); if (!box) return;
     const name = $("own-name")?.value || "";
-    if (!BGGCAT) { box.innerHTML = `<p class="fine">Looking it up on BoardGameGeek…</p>`; return; }
-    if (!bggKey(name)) { box.innerHTML = ""; return; }
-    ADD.hits = bggFind(name);
-    if (!ADD.own) ADD.sel = ADD.hits.sure;
+    if (skey(name).length < 2) { box.innerHTML = ""; return; }
+    // SPIEL's own games first: one of those is opened, not added
+    const sp = spielMatches(name, 3), spExact = sp.some(p => skey(p.t) === skey(name));
+    const spHtml = sp.length ? `<p class="picklabel">At SPIEL 2026${spExact ? ": this one is in the list already" : ""}</p><div class="picks">${sp.map(spielPick).join("")}</div>` : "";
+    if (!BGGCAT) { box.innerHTML = spHtml + (bggCatP ? `<p class="fine">Looking it up on BoardGameGeek…</p>` : ""); return; }
+    const found = bggFind(name, 6);
+    ADD.hits = found.filter(g => !atSpiel(g.id));
+    if (!ADD.own) ADD.sel = spExact || !found.sure || atSpiel(found.sure.id) ? null : found.sure;
     if (ADD.sel && !ADD.hits.includes(ADD.sel)) ADD.hits.unshift(ADD.sel);
-    box.innerHTML = ADD.hits.length
-      ? `<p class="picklabel">${ADD.sel ? "Linked to BoardGameGeek. Not the right one? Pick another:" : "Which one is it on BoardGameGeek?"}</p>
+    box.innerHTML = spHtml + (ADD.hits.length
+      ? `<p class="picklabel">${sp.length ? "Not at SPIEL? " : ""}${ADD.sel ? "Linked to BoardGameGeek. Not the right one? Pick another:" : "Which one is it on BoardGameGeek?"}</p>
         <div class="picks">${ADD.hits.map(g => pickRow(g, g === ADD.sel, "data-pick")).join("")}
         <button class="pick nopick" data-pick="0" aria-pressed="${!ADD.sel}"><span class="pmain"><span class="pname">None of these</span><span class="psub">Add it without a BoardGameGeek link</span></span>${!ADD.sel ? `<span class="ptick">${TICK}</span>` : ""}</button></div>`
-      : `<p class="fine">Not among BoardGameGeek's ranked games; very new or small games often are not. It is added with just its name.</p>`;
+      : `<p class="fine">Not among BoardGameGeek's ranked games; very new or small games often are not. It is added with just its name.</p>`);
   }
   function openAddGame(name, pickId) {
     sheetOpen = { kind: "addgame" };
@@ -1195,7 +1321,7 @@ label.btn { cursor: pointer; position: relative; }
       if (sheetOpen?.kind !== "addgame") return;
       if (pickId) { const g = bggById(pickId); if (g) { ADD.sel = g; ADD.own = true; } }
       renderPicks();
-    }).catch(() => { const box = $("own-picks"); if (box) box.innerHTML = `<p class="fine">The BoardGameGeek list could not load (no signal?). Add the game by name, or paste its link below.</p>`; });
+    }).catch(() => { renderPicks(); $("own-picks")?.insertAdjacentHTML("beforeend", `<p class="fine">The BoardGameGeek list could not load (no signal?). Add the game by name, or paste its link below.</p>`); });
     if (!pickId) setTimeout(() => $("own-name")?.focus(), 50);
   }
   function addOwnGame(played) {
@@ -1213,11 +1339,20 @@ label.btn { cursor: pointer; position: relative; }
     openSheet("pr", OWN + id);
     toast(played ? `${name} added and marked played.` : `${name} added.`);
   }
+  // the Games tab's matches that are not at SPIEL; failed: true when the list could not load, null when not looked up
+  function fillBggMore(q, failed) {
+    const box = $("bggmore"); if (!box || ui.games.q.trim() !== q) return;
+    const hits = failed === undefined ? bggFind(q, 12).filter(g => !atSpiel(g.id)) : [], more = box.dataset.more === "1";
+    box.innerHTML = (failed === null ? "" : `<h3 class="sechead">Not at SPIEL 2026 <small>· on BoardGameGeek</small></h3>` + (hits.length
+      ? `<div class="picks">${hits.slice(0, more ? 12 : 4).map(g => pickRow(g, false, "data-quickadd", "+")).join("")}</div>${hits.length > 4 && !more ? `<button class="linkbtn" data-bggmore>More from BoardGameGeek</button>` : ""}`
+      : `<p class="fine">${failed ? "BoardGameGeek's list could not load (no signal?)." : "None of BoardGameGeek's ranked games matches."}</p>`))
+      + `<p class="addown"><button class="btn sm" data-addgame="${esc(q)}">+ Add “${esc(q)}” as your own game</button></p>`;
+  }
   // an own game without a BoardGameGeek link: its sheet offers the likely matches
   function ownLinkPicks(p) {
     bggCatalog().then(() => {
       const box = $("own-linkpicks"); if (!box || sheetOpen?.id !== p.k) return;
-      const hits = bggFind(p.t, 3).filter(g => !knownByBgg(g.id));
+      const hits = bggFind(p.t, 3).filter(g => !knownByBgg(g.id)).slice(0, 3);
       box.innerHTML = hits.length ? `<p class="picklabel">Is it one of these on BoardGameGeek?</p><div class="picks">${hits.map(g => pickRow(g, false, "data-own-link")).join("")}</div>` : "";
     }).catch(() => {});
   }
@@ -1658,15 +1793,13 @@ label.btn { cursor: pointer; position: relative; }
     if (tab === "exhibitors") renderList(filteredExhibitors(), exRow, "exhibitors", "Try another spelling, a booth code like 3K120, or clear the hall and category filters.");
     else if (tab === "games") {
       const games = filteredGames();
-      renderList(games, gameRow, "new games", "Try a publisher, a designer, a mechanic like “worker placement”, or clear the filters.");
-      const q = ui.games.q.trim(); // a game on neither list: add it yourself, with BoardGameGeek's matches at hand
-      if (q) {
-        $("view").insertAdjacentHTML("afterbegin", `<div class="addown"><button class="btn sm" data-addgame="${esc(q)}">+ Not in the list? Add “${esc(q)}” as a game</button><div id="quickadd"></div></div>`);
-        if (games.length < 3 && bggKey(q).length > 1) bggCatalog().then(() => {
-          const box = $("quickadd"); if (!box || ui.games.q.trim() !== q) return;
-          const hits = bggFind(q, 3).filter(g => !knownByBgg(g.id));
-          box.innerHTML = hits.length ? `<p class="picklabel">On BoardGameGeek:</p><div class="picks">${hits.map(g => pickRow(g, false, "data-quickadd")).join("")}</div>` : "";
-        }).catch(() => {});
+      renderList(games, gameRow, ui.games.q.trim() ? "new games at SPIEL 2026" : "new games", "Try a publisher, a designer, a mechanic like “worker placement”, or clear the filters.");
+      const q = ui.games.q.trim(), g = ui.games; // games not at SPIEL: BoardGameGeek's matches after SPIEL's own
+      if (q && games.length > shown) $("view").insertAdjacentHTML("afterbegin", `<p class="addown"><button class="btn sm" data-addgame="${esc(q)}">+ Not at SPIEL? Add “${esc(q)}”</button></p>`);
+      else if (q) {
+        $("view").insertAdjacentHTML("beforeend", `<section class="bggmore" id="bggmore"></section>`);
+        if (skey(q).length >= 2 && !g.hall && !g.genre && !g.tag && !g.minth && !ui.prio) bggCatalog().then(() => fillBggMore(q), () => fillBggMore(q, true));
+        else fillBggMore(q, null);
       }
     }
     else if (tab === "plan") renderPlan();
@@ -1714,10 +1847,16 @@ label.btn { cursor: pointer; position: relative; }
       return renderPicks();
     }
     const qa = e.target.closest("[data-quickadd]");
-    if (qa) { e.stopPropagation(); const g = bggById(+qa.dataset.quickadd); return openAddGame(g?.n || "", g?.id); }
+    if (qa) { // added before: open that one
+      e.stopPropagation(); const g = bggById(+qa.dataset.quickadd), known = knownByBgg(g?.id);
+      return known ? openSheet("pr", known.k) : openAddGame(g?.n || "", g?.id);
+    }
+    const op = e.target.closest("[data-openpr]");
+    if (op) { e.stopPropagation(); return openSheet("pr", op.dataset.openpr); }
+    if (e.target.closest("[data-bggmore]")) { e.stopPropagation(); const box = $("bggmore"); box.dataset.more = "1"; return fillBggMore(ui.games.q.trim()); }
   }, true);
   document.addEventListener("input", e => { // the BoardGameGeek matches follow the name you type
-    if (e.target.id === "own-name") { ADD.own = false; renderPicks(); const a = $("own-find"); if (a) a.href = bggSearchUrl(e.target.value); }
+    if (e.target.id === "own-name") { ADD.own = false; clearTimeout(ADD.timer); ADD.timer = setTimeout(renderPicks, 100); const a = $("own-find"); if (a) a.href = bggSearchUrl(e.target.value); }
   });
   document.addEventListener("click", e => {
     const b = e.target.closest("[data-hallmap]"); if (!b) return;
