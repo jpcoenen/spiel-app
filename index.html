@@ -543,7 +543,7 @@ label.btn { cursor: pointer; position: relative; }
   // The page itself always comes from claude.ai (service workers are not allowed there), but what it loads after
   // that is kept in IndexedDB: the data files, the hall plans and the cover sheets. With the page open, or on a fair
   // network too slow to finish a download, the app runs from that copy.
-  const DATA_V = "20261023f"; // bump whenever data.json or maps.json is republished
+  const DATA_V = "20261024a"; // bump whenever data.json or maps.json is republished
   const IMG_V = "20261022c";  // bump whenever the hall plans or cover sheets are republished
   const IDB = (() => {
     let dbp = null;
@@ -1934,7 +1934,7 @@ label.btn { cursor: pointer; position: relative; }
       details.push(`<div class="line maplfilter"><span>${FUNNEL}${mm.n.toLocaleString("en")} ${mm.src === "games" ? (mm.n === 1 ? "game" : "games") : (mm.n === 1 ? "exhibitor" : "exhibitors")} match ${esc(mm.label)}${here} <span class="fine">(filters from ${mm.src === "games" ? "Games" : "Exhibitors"})</span></span><span class="fbtns"><button class="btn sm" data-map-editfilter>Edit</button><button class="btn sm" data-map-clearfilter>Clear</button></span></div>`);
     }
     const cl = ceilLegend();
-    if (GPS.cal) $("maplegend").innerHTML = gpsLegend(); // lining up GPS: its buttons always show
+    if (GPS.cal || GPS.collect) $("maplegend").innerHTML = gpsLegend(); // lining up GPS: its buttons always show
     else if (MV.place) $("maplegend").innerHTML = cl; // placing or moving a reference photo: its buttons always show
     else {
       if (cl) { details.push(cl); badges.push(`<span class="lbadge who" title="Spots">${CAM}</span>`); }
@@ -2068,7 +2068,7 @@ label.btn { cursor: pointer; position: relative; }
       if (e.target.closest("[data-gps-here]")) {
         const spot = crossSpot();
         if (!spot) return toast("Put the cross on a hall plan first.");
-        GPS.cal = false; return gpsAddPair(spot);
+        GPS.cal = false; return gpsCollect(spot);
       }
       if (e.target.closest("[data-ceil-done]")) { MV.place = false; return drawMarks(); }
       if (e.target.closest("[data-legend-toggle]")) { MV.legendOpen = !MV.legendOpen; return drawMarks(); }
@@ -2350,6 +2350,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       GPS.pairs = new Map(snap.docs.map(d => [d.id, d.data()]));
       IDB.put("gps:pairs", [...GPS.pairs]);
       gpsFit(); ceilChanged();
+      gpsShareLocal();
     }, () => {});
     if (CEIL.pendingPing) sharePing();
     ceilChanged();
@@ -2939,6 +2940,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       introSeen = true;
       if (d.m && d.m !== "0") ui.map.id = d.m;
       mapsReady.then(gpsFit);
+      if (!STANDALONE) gpsShareLocal();
       setTimeout(() => toast(STANDALONE ? "Your plan and the GPS line-up are here. Tap the arrow button on the map to turn on GPS." : "Your plan from the GPS version is here.", 7000), 600);
     } catch { setTimeout(() => toast("This link could not be read."), 600); }
     history.replaceState(null, "", location.pathname);
@@ -2971,7 +2973,8 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
   function gpsFit() {
     GPS.fit = null;
     if (!MAPS?.geo) return;
-    const pts = [...GPS.pairs.values(), ...GPS.local].filter(p => p && p.acc <= 40 && MAPS.maps[p.map])
+    const seen = new Set();
+    const pts = [...GPS.pairs.values(), ...GPS.local].filter(p => p && p.acc <= 40 && MAPS.maps[p.map] && !seen.has(p.t + ":" + p.lat) && seen.add(p.t + ":" + p.lat))
       .map(p => ({ lat: p.lat, lon: p.lon, acc: p.acc, o: toOverview(p.map, p.x, p.y) })).filter(p => p.o);
     if (pts.length < 2) return;
     const o = [pts.reduce((s, p) => s + p.lat, 0) / pts.length, pts.reduce((s, p) => s + p.lon, 0) / pts.length];
@@ -2982,8 +2985,10 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       me /= sw; ms /= sw; mu /= sw; mv /= sw;
       let sxx = 0, a = 0, b = 0;
       for (const p of ps) { const x = p.e[0] - me, y = p.e[1] - ms, u = p.o[0] - mu, v = p.o[1] - mv; sxx += p.w * (x * x + y * y); a += p.w * (x * u + y * v); b += p.w * (x * v - y * u); }
-      if (sxx / sw < 20 * 20) return null; // the points must lie some 40 m apart
-      a /= sxx; b /= sxx;
+      if (sxx / sw < 15 * 15) return null; // the points must lie some 30 m apart
+      if (MAPS.geo.mpx) { // the scale is known from the stand sizes: only the turn comes from the points
+        const r = Math.hypot(a, b) || 1, k = 1 / MAPS.geo.mpx; a = a / r * k; b = b / r * k;
+      } else { a /= sxx; b /= sxx; }
       return { o, a, b, tu: mu - (a * me - b * ms), tv: mv - (b * me + a * ms), n: ps.length };
     };
     const miss = (f, p) => { const [x, y] = enu(p.lat, p.lon, f.o); return Math.hypot(f.a * x - f.b * y + f.tu - p.o[0], f.b * x + f.a * y + f.tv - p.o[1]) / Math.hypot(f.a, f.b); };
@@ -3018,8 +3023,9 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     Object.assign(GPS, { on: true, centred: false, warned: false });
     MV.legendOpen = true; drawMarks();
     toast("Finding your GPS position…");
+    GPS.hist = [];
     GPS.watch = navigator.geolocation.watchPosition(p => {
-      GPS.fix = { lat: p.coords.latitude, lon: p.coords.longitude, acc: Math.round(p.coords.accuracy), t: Date.now() };
+      gpsReading({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() });
       if (!GPS.centred && GPS.fit) { // the first fix: show it
         GPS.centred = true;
         const ov = gpsToOverview(GPS.fix.lat, GPS.fix.lon), q = fromOverview(ov[0], ov[1]);
@@ -3036,12 +3042,67 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       } else if (!GPS.warned) { GPS.warned = true; toast("No GPS position yet. Indoors that can take a while; near a door or window it is quicker.", 6000); }
     }, { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 });
   }
-  // a line-up pair: this spot on the plan, the current GPS reading
-  async function gpsAddPair(spot, quiet) {
-    const f = GPS.fix;
+  // Indoors one GPS reading can be tens of metres off, and the next one off the other way. The dot shows the
+  // accuracy-weighted mean of the last 12 seconds; a reading far outside what the recent ones allow is left out.
+  function gpsReading(r) {
+    const now = r.t;
+    GPS.hist = (GPS.hist || []).filter(h => now - h.t < 12000);
+    const cur = GPS.fix && now - GPS.fix.t < 15000 ? GPS.fix : null;
+    if (cur && GPS.hist.length >= 3) {
+      const [dx, dy] = enu(r.lat, r.lon, [cur.lat, cur.lon]);
+      if (Math.hypot(dx, dy) > 2.5 * (r.acc + cur.acc) + 10 && r.acc > cur.acc) return; // a stray reading
+    }
+    GPS.hist.push(r);
+    if (GPS.collect) GPS.collect.fixes.push(r);
+    GPS.fix = gpsMean(GPS.hist, now);
+  }
+  // weighted mean of readings: better accuracy and newer count more
+  function gpsMean(list, now) {
+    let sw = 0, lat = 0, lon = 0;
+    for (const h of list) { const w = Math.exp(-(now - h.t) / 6000) / Math.max(4, h.acc) ** 2; sw += w; lat += w * h.lat; lon += w * h.lon; }
+    const best = Math.min(...list.map(h => h.acc));
+    // the spread of the readings, and no better than the best one or than averaging allows
+    const o = [lat / sw, lon / sw], spread = Math.sqrt(list.reduce((s, h) => { const [x, y] = enu(h.lat, h.lon, o); return s + x * x + y * y; }, 0) / list.length);
+    return { lat: o[0], lon: o[1], acc: Math.round(Math.max(best / Math.sqrt(list.length), Math.min(best, spread), 3)), t: now, n: list.length };
+  }
+  // "I'm here": stand still while the app collects readings for ten seconds, then their mean is the line-up point
+  function gpsCollect(spot) {
+    const t0 = Date.now();
+    GPS.collect = { spot, fixes: (GPS.hist || []).filter(h => t0 - h.t < 4000), t0 }; // the last few seconds count too
+    drawMarks();
+    const ask = () => navigator.geolocation.getCurrentPosition(p => GPS.collect && gpsReading({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy, t: Date.now() }), () => {}, { enableHighAccuracy: true, maximumAge: 0, timeout: 8000 });
+    const tick = () => {
+      const c = GPS.collect; if (!c) return;
+      if ((Date.now() - c.t0) % 2000 < 500) ask(); // a standing phone may send nothing new on its own
+      const left = Math.ceil((10000 - (Date.now() - c.t0)) / 1000);
+      const el = $("gpsleft"); if (el) el.textContent = left > 0 ? `${left} s · ${c.fixes.length} readings` : "";
+      if (left > 0) return setTimeout(tick, 500);
+      GPS.collect = null;
+      if (!c.fixes.length && GPS.fix && Date.now() - GPS.fix.t < 20000) c.fixes.push(GPS.fix);
+      const good = c.fixes.filter(f => f.acc <= 40);
+      if (!good.length) { toast(c.fixes.length ? `GPS was too rough (best ±${Math.round(Math.min(...c.fixes.map(f => f.acc)))} m) to line up here. Try near a door or window.` : "No GPS readings came in. Try again near a door or window.", 7000); return drawMarks(); }
+      gpsAddPair(c.spot, false, gpsMean(good, Date.now()));
+    };
+    tick();
+  }
+  // line-up points kept only on this phone (from the GPS copy, or made offline) go to the shared data when possible
+  async function gpsShareLocal() {
+    if (!CEIL.db || !CEIL.canWrite || !navigator.onLine || !GPS.local.length) return;
+    const have = new Set([...GPS.pairs.values()].map(p => p.t + ":" + p.lat)), left = [];
+    for (const p of GPS.local) {
+      if (have.has(p.t + ":" + p.lat)) continue;
+      try { await CEIL.db.collection("gpsfix").doc().set({ map: p.map, x: p.x, y: p.y, lat: p.lat, lon: p.lon, acc: p.acc, t: p.t, by: p.by || CEIL.uid || "" }); }
+      catch { left.push(p); }
+    }
+    GPS.local = left;
+    try { localStorage.setItem(LS_KEY + "-gpsfix", JSON.stringify(left)); } catch {}
+  }
+  // a line-up pair: this spot on the plan, a GPS position measured there
+  async function gpsAddPair(spot, quiet, fix) {
+    const f = fix || GPS.fix;
     if (!f || Date.now() - f.t > 30000) { if (!quiet) toast("No fresh GPS reading yet. Wait a moment and try again."); return; }
-    if (f.acc > 40) { if (!quiet) toast(`GPS is too rough right now (±${f.acc} m) to line up the map. Try near a door or window.`); return; }
-    const pair = { map: spot.map, x: Math.round(spot.x), y: Math.round(spot.y), lat: f.lat, lon: f.lon, acc: f.acc, t: Date.now(), by: CEIL.uid || "" };
+    if (f.acc > 40) { if (!quiet) toast(`GPS is too rough right now (±${Math.round(f.acc)} m) to line up the map. Try near a door or window.`); return; }
+    const pair = { map: spot.map, x: Math.round(spot.x), y: Math.round(spot.y), lat: +f.lat.toFixed(7), lon: +f.lon.toFixed(7), acc: Math.round(f.acc), t: Date.now(), by: CEIL.uid || "" };
     const before = !!GPS.fit;
     if (CEIL.db && CEIL.canWrite && navigator.onLine) {
       try { await CEIL.db.collection("gpsfix").doc().set(pair); GPS.pairs.set("new" + pair.t, pair); }
@@ -3050,16 +3111,17 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
     try { localStorage.setItem(LS_KEY + "-gpsfix", JSON.stringify(GPS.local.slice(-40))); } catch {}
     gpsFit(); drawMarks();
     const n = [...GPS.pairs.values()].length + GPS.local.length;
-    if (!quiet || GPS.fit && !before) toast(GPS.fit ? `GPS lined up from ${GPS.fit.n} points.` : n < 2 ? "Saved. Do the same at a second spot, at least 50 m away." : "Saved. The spots are still too close together: add one at least 50 m from the others.", 5000);
+    if (!quiet || GPS.fit && !before) toast(GPS.fit ? `GPS lined up from ${GPS.fit.n} points.${GPS.fit.n < 4 ? " More points, spread over the halls, make it more exact." : ""}` : n < 2 ? "Saved. Do the same at a second spot, at least 50 m away." : "Saved. The spots are still too close together: add one at least 50 m from the others.", 6000);
   }
   function gpsLegend() {
+    if (GPS.collect) return `<div class="line"><span class="gpsdot"></span>Hold still: measuring your GPS position… <span id="gpsleft"></span></div>`;
     if (GPS.cal) return `<strong>Line up GPS</strong>Move the map until the cross is where you are standing, then tap “I'm here”.${GPS.fix ? ` GPS: ±${GPS.fix.acc} m.` : " Waiting for GPS…"}
       <div class="legendbtns"><button class="btn sm primary" data-gps-here>I'm here</button><button class="btn sm" data-gps-cancel>Cancel</button></div>`;
     if (!GPS.on) return "";
     if (!GPS.fix) return `<div class="line">GPS: waiting for a position…</div>`;
     const where = GPS.fit && GPS.where ? (GPS.where.out * Math.hypot(GPS.fit.a, GPS.fit.b) ** -1 > 15 ? ` · outside, near ${esc(MAPS.maps[GPS.where.map].n)}` : ` · ${esc(MAPS.maps[GPS.where.map].n)}`) : "";
     return GPS.fit
-      ? `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m${where}. Lined up from ${GPS.fit.n} points${GPS.fit.rms > 15 ? " (rough)" : ""}.</div><div class="legendbtns"><button class="btn sm" data-gps-cal>Add a line-up point</button></div>`
+      ? `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m${where}. Lined up from ${GPS.fit.n} points${GPS.fit.rms > 15 ? " (they disagree, so rough)" : GPS.fit.n < 4 ? " (more points, spread out, make it more exact)" : ""}.</div><div class="legendbtns"><button class="btn sm" data-gps-cal>Add a line-up point</button></div>`
       : `<div class="line"><span class="gpsdot"></span>GPS ±${GPS.fix.acc} m, but the map is not lined up with GPS yet. Put the cross where you stand and tap “I'm here”, at two spots at least 50 m apart. Ceiling photos also line it up.</div><div class="legendbtns"><button class="btn sm primary" data-gps-cal>Line up here</button></div>`;
   }
 
