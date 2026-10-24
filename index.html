@@ -646,7 +646,7 @@ label.btn { cursor: pointer; position: relative; }
     return `<h2>Offline use</h2>
       <p>The exhibitor and game lists and your plan are kept on this phone. If the connection drops while the app is open, search, My plan and ticking off booths keep working. Changes sync when you are back online.</p>
       <dl class="facts"><dt>Hall plans</dt><dd>${maps} of ${nMaps} saved</dd><dt>Box covers</dt><dd>${sheets} of ${sheetCount()} sets saved</dd>${CEIL.refs.size ? `<dt>Ceiling photos</dt><dd>${[...CEIL.refs.keys()].filter(id => CEIL.feats.has(id)).length} of ${CEIL.refs.size} saved, for “Where am I?” without signal</dd>` : ""}</dl>
-      <p class="fine">Opening the app needs claude.ai, so it does not start without any connection. As a backup, save your plan as a PDF (in My plan): it works with no connection at all.</p>
+      <p class="fine">${STANDALONE ? "Once you have opened spielplan with a connection, it also starts without any. As a backup, save your plan as a PDF (in My plan)." : "Opening the app needs claude.ai, so it does not start without any connection. As a backup, save your plan as a PDF (in My plan): it works with no connection at all."}</p>
       ${state ? `<p class="ceilstatus" role="status">${state}</p>` : ""}
       <button class="btn" data-off-all${OFF.busy || sheets === sheetCount() && maps === nMaps ? " disabled" : ""}>Save all covers and plans (about 12 MB)</button>`;
   }
@@ -1103,7 +1103,7 @@ label.btn { cursor: pointer; position: relative; }
         <div class="sub">${st.r ? `<span class="ratestars" aria-label="${st.r} of 5">${starsText(st.r)}</span> · ` : ""}${st.pd ? "played " + dayLabel(st.pd) : "rated"}${p.src === "own" ? " · your own entry" : ""}</div>
         ${st.n ? `<div class="sub thought">${esc(st.n)}</div>` : ""}</div></div>`).join("") + `</div>`
       : `<div class="card"><p>Open a game, tap “Mark played”, give it stars and write what you thought of it in the note. A game that is on neither list: add it with “Add a game”.</p></div>`;
-    if (items.length) html += `<p class="planfoot"><button class="linkbtn" id="copyplayed">Copy as text</button></p>`;
+    if (items.length || STANDALONE) html += `<p class="planfoot">${items.length ? `<button class="linkbtn" id="copyplayed">Copy as text</button>` : ""}${items.length && STANDALONE ? `<span aria-hidden="true">·</span>` : ""}${STANDALONE ? `<button class="linkbtn" data-moveplan>Move my plan</button>` : ""}</p>`;
     $("view").innerHTML = html;
     renderSync();
   }
@@ -1155,13 +1155,23 @@ label.btn { cursor: pointer; position: relative; }
     el.textContent = syncState === "account" ? "Saved to your Claude account, so it is the same on every device."
       : !navigator.onLine || syncState === "offline" ? "Offline. Changes are saved on this phone and sync when you are back online."
       : syncState === "account-error" ? "Could not save to your account just now. Saved on this phone; trying again shortly."
-      : "Saved on this phone.";
+      : STANDALONE ? "Saved in this browser. “Move my plan” below takes it to another device." : "Saved on this phone.";
   }
+  // the main version keeps your plan in the browser: a link carries it to another device (merged with what is there)
+  async function movePlan() {
+    const url = handoffUrl(GPS_PAGE);
+    if (navigator.share) { try { await navigator.share({ title: "My spielplan", text: "My SPIEL Essen plan", url }); return; } catch (e) { if (e?.name === "AbortError") return; } }
+    try { await navigator.clipboard.writeText(url); toast("Link copied. Open it on the other device: your plan is added to what is there.", 6000); return; } catch {}
+    sheetOpen = { kind: "move" };
+    showSheet(`<div class="grab"></div><h2 id="sheet-title">Move my plan</h2><p>Open this link on the other device. Your stars, priorities, notes, played games and ratings are added to what is there.</p><textarea class="sharebox" style="width:100%;min-height:120px" readonly>${esc(url)}</textarea>`);
+    $("sheet").querySelector("textarea").select();
+  }
+  document.addEventListener("click", e => { if (e.target.closest("[data-moveplan]")) movePlan(); });
   function renderPlan() {
     if (ui.plan.played) return renderPlayed();
     const v = $("view"), groups = planGroups();
     if (!groups.length) {
-      v.innerHTML = `<div class="card"><h2>Your plan is empty</h2><p>Tap the star on any exhibitor or new game. Starred booths show up here, grouped by hall and sorted by booth number, so you can walk each hall in one pass and tick booths off as you go.</p><p class="fine" id="sync"></p></div>`;
+      v.innerHTML = `<div class="card"><h2>Your plan is empty</h2><p>Tap the star on any exhibitor or new game. Starred booths show up here, grouped by hall and sorted by booth number, so you can walk each hall in one pass and tick booths off as you go.</p><p class="fine" id="sync"></p>${STANDALONE ? `<p class="fine">Planned on another device? Use “Move my plan” there and open the link here.</p>` : ""}</div>`;
       renderSync(); return;
     }
     const total = groups.reduce((n, g) => n + g.items.length, 0), done = groups.reduce((n, g) => n + g.items.filter(i => i.st.v).length, 0);
@@ -1181,7 +1191,7 @@ label.btn { cursor: pointer; position: relative; }
       html += `</section>`;
     }
     // the plan's exports, small and out of the way at the end of the list
-    html += `<p class="planfoot"><button class="linkbtn" id="saveplanpdf">Save as PDF</button><span aria-hidden="true">·</span><button class="linkbtn" id="copyplan">Copy as text</button></p>`;
+    html += `<p class="planfoot"><button class="linkbtn" id="saveplanpdf">Save as PDF</button><span aria-hidden="true">·</span><button class="linkbtn" id="copyplan">Copy as text</button>${STANDALONE ? `<span aria-hidden="true">·</span><button class="linkbtn" data-moveplan>Move my plan</button>` : ""}</p>`;
     v.innerHTML = html;
     renderSync();
   }
@@ -1210,10 +1220,10 @@ label.btn { cursor: pointer; position: relative; }
     const [cls, msg] = fairStatus(), today = berlinNow().date;
     const upd = DATA.updated ? `${DATA.updated.slice(6, 8)}.${DATA.updated.slice(4, 6)}.${DATA.updated.slice(0, 4)}` : "";
     $("view").innerHTML = (STANDALONE
-      ? `<div class="card"><h2>spielplan with GPS</h2><p>This is the copy of spielplan outside claude.ai, so your browser can share your location with the map. Your stars here are kept in this browser.${CLAUDE_PAGE ? " Ceiling photos, other people's spots and the shared note are in the claude.ai version; this button takes your plan back there." : " Ceiling photos, other people's spots and the shared note are in the claude.ai version."}</p>
-          ${CLAUDE_PAGE ? `<a class="btn" style="width:100%" href="${esc(handoffUrl(CLAUDE_PAGE))}" target="_blank" rel="noopener">Back to claude.ai with my plan</a>` : ""}</div>`
-      : `<div class="card"><h2>GPS on the map</h2><p>claude.ai does not let apps use your location. The GPS version is the same app as an ordinary web page: your stars, priorities, notes and the GPS line-up go along.</p>
-          <a class="btn" style="width:100%" href="${esc(handoffUrl())}" target="_blank" rel="noopener">Open the GPS version with my plan</a></div>`) + `
+      ? (CLAUDE_PAGE ? `<div class="card"><h2>Shared with your group</h2><p>Ceiling photos for “Where am I?”, each other's spots and the shared note live in the claude.ai version of spielplan. This button opens it with your plan.</p>
+          <a class="btn" style="width:100%" href="${esc(handoffUrl(CLAUDE_PAGE))}" target="_blank" rel="noopener">Open in claude.ai with my plan</a></div>` : "")
+      : `<div class="card"><h2>spielplan's main version</h2><p>The main spielplan is <a href="${GPS_PAGE}" target="_blank" rel="noopener">jpcoenen.github.io/spiel-app</a>: GPS on the map, it starts without any signal, and its links open for anyone. Ceiling photos, each other's spots and the shared note stay here.</p>
+          <a class="btn" style="width:100%" href="${esc(handoffUrl())}" target="_blank" rel="noopener">Open it with my plan</a></div>`) + `
       <div class="card"><span class="status ${cls}">${esc(msg)}</span>
         <table class="hours">${DAYS.map(d => `<tr class="${d[0] === today ? "today" : ""}"><td>${d[1]}</td><td>${d[2]}:00 – ${d[3]}:00</td></tr>`).join("")}</table>
         <p class="fine">Times are Essen local time. Business visitors can enter from 9:30 at the West, South and East fast lanes.</p></div>
@@ -1228,7 +1238,8 @@ label.btn { cursor: pointer; position: relative; }
       <div class="card" id="offcard">${offlineCardHtml()}</div>
       <div class="card"><h2>About this app</h2>
         <p class="fine">Spielplan is an unofficial companion and is not made by or affiliated with SPIEL Essen or Friedhelm Merz Verlag. Exhibitor and novelty data is a snapshot of the public lists on spiel-essen.de${upd ? ", taken " + upd : ""}: ${DATA.ex.length.toLocaleString("en")} exhibitors and ${DATA.pr.length.toLocaleString("en")} new games. Booths can still change, so check the official site when in doubt. The GPS position of the halls comes from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>.</p></div>
-      <p class="planfoot"><button class="linkbtn" data-open-note>Waar heeft Mick zijn sleutel opgeborgen? En andere notities</button></p>`;
+      ${STANDALONE ? (CLAUDE_PAGE ? `<p class="planfoot"><a class="linkbtn" href="${esc(CLAUDE_PAGE)}#notepad" target="_blank" rel="noopener" lang="nl">Waar heeft Mick zijn sleutel opgeborgen? En andere notities</a></p>` : "")
+        : `<p class="planfoot"><button class="linkbtn" data-open-note>Waar heeft Mick zijn sleutel opgeborgen? En andere notities</button></p>`}`;
   }
 
   // ---------- Back button and links ----------
@@ -1288,7 +1299,7 @@ label.btn { cursor: pointer; position: relative; }
   });
   // a link to a game or exhibitor: shared from the phone's share menu, or copied
   async function shareItem(kind, id) {
-    const base = STANDALONE ? GPS_PAGE : CLAUDE_PAGE, name = kind === "pr" ? prByKey.get(id)?.t : exById.get(id)?.n;
+    const base = GPS_PAGE, name = kind === "pr" ? prByKey.get(id)?.t : exById.get(id)?.n;
     const url = base + NAV_HASH[kind] + encodeURIComponent(id);
     if (navigator.share) {
       try { await navigator.share({ title: name, text: `${name} at SPIEL Essen 2026`, url }); return; }
@@ -3025,6 +3036,8 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
   // ordinary web page, where the browser asks for it as usual: the GPS button sends you there, plan and line-up included.
   const STANDALONE = /github\.io$/.test(location.hostname);
   if (STANDALONE) document.documentElement.classList.add("shell");
+  // the main version starts without any signal once opened: sw.js keeps the page and its data (images: IndexedDB)
+  if (STANDALONE && "serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
   // The claude.ai link is left out of the public copy (it opens the shared spots and note); that copy learns it from
   // the hand-off link instead, so only people who came from claude.ai get it.
   const GPS_PAGE = "https://jpcoenen.github.io/spiel-app/", HOME_PAGE = "";
@@ -3044,7 +3057,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
   // the whole plan, unticked stars included, so the newest change to each entry wins on the other side
   function handoffUrl(to) {
     const pairs = [...GPS.pairs.values(), ...GPS.local].map(p => [p.map, p.x, p.y, +(+p.lat).toFixed(6), +(+p.lon).toFixed(6), p.acc, p.t]);
-    const bytes = new TextEncoder().encode(JSON.stringify({ v: 1, p: plan, g: pairs, m: ui.map.id, r: STANDALONE ? undefined : CLAUDE_PAGE }));
+    const bytes = new TextEncoder().encode(JSON.stringify({ v: 1, p: plan, g: pairs, m: ui.map.id, r: CLAUDE_PAGE || undefined }));
     let bin = ""; for (const c of bytes) bin += String.fromCharCode(c);
     return (to || GPS_PAGE) + "#handoff=" + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   }
@@ -3070,7 +3083,7 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
       if (d.m && d.m !== "0") ui.map.id = d.m;
       mapsReady.then(gpsFit);
       if (!STANDALONE) gpsShareLocal();
-      setTimeout(() => toast(STANDALONE ? "Your plan and the GPS line-up are here. Tap the arrow button on the map to turn on GPS." : "Your plan from the GPS version is here.", 7000), 600);
+      setTimeout(() => toast(STANDALONE ? "Your plan is here. Tap the arrow button on the map to turn on GPS." : "Your plan from the main version is here.", 7000), 600);
     } catch { setTimeout(() => toast("This link could not be read."), 600); }
     history.replaceState(null, "", location.pathname);
   }
@@ -3540,10 +3553,11 @@ Use kind "exhibitor" when the list is of exhibitors (the bold line is a company 
         ${item(THUMB, "BoardGameGeek built in", `Thumbs up, must-haves and tags for ${onBgg.toLocaleString("en")} new games. Sort by most thumbs, or filter by mechanic.`)}
         ${item(DIE, `${bggOnly.toLocaleString("en")} more new games`, "From BoardGameGeek's SPIEL preview and missing from the official novelty list, with their booth where known.")}
         ${item('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="4" width="7" height="7" rx="1.5"/><rect x="14" y="4" width="7" height="9" rx="1.5"/><rect x="3" y="15" width="9" height="5" rx="1.5"/><path d="M10 7.5h4M8 11v4M17.5 13v3.5H12" stroke-dasharray="2 2"/></svg>', "The whole fair on one map", "Every hall plan joined into one map, with a dashed line between doors that lead into each other. Swipe, pinch, or double-tap and drag to zoom. The layers button switches back to one plan at a time.")}
-        ${item(CAM, "Where am I?", "Photograph the ceiling to see where you are on the hall plan, and share your spot so friends can find you.")}
-        ${item('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1" fill="currentColor"/><path d="M3 3l18 18"/></svg>', "Ready for bad signal", "The lists, your plan and every hall plan stay on your phone. Save your plan as a PDF with maps for no signal at all.")}
-        ${item('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h7M9 16h5"/></svg>', `<span lang="nl">Waar heeft Mick zijn sleutel opgeborgen? En andere notities</span>`, "The group's shared note, for everyone who opens the app. You find it at the bottom of Fair info.")}
-        ${item('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="4" width="13" height="10" rx="2"/><rect x="15" y="9" width="6" height="11" rx="1.5"/><path d="M6 18h7"/></svg>', "Your plan on every device", "Starred booths, priorities, notes and ticks are saved to your Claude account when you are signed in.")}
+        ${STANDALONE ? item(LOCATE, "GPS on the map", "Turn on GPS with the arrow on the map and see where you are in the halls.") : item(CAM, "Where am I?", "Photograph the ceiling to see where you are on the hall plan, and share your spot so friends can find you.")}
+        ${item(TICK, "Played and rated", "Mark games played, give them stars and note what you thought, also for games that are on no list.")}
+        ${item('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1" fill="currentColor"/><path d="M3 3l18 18"/></svg>', "Ready for bad signal", STANDALONE ? "Once opened, spielplan also starts without any connection: the lists, your plan and every hall plan stay on your phone. Or save your plan as a PDF." : "The lists, your plan and every hall plan stay on your phone. Save your plan as a PDF with maps for no signal at all.")}
+        ${STANDALONE ? "" : item('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4M9 12h7M9 16h5"/></svg>', `<span lang="nl">Waar heeft Mick zijn sleutel opgeborgen? En andere notities</span>`, "The group's shared note, for everyone who opens the app. You find it at the bottom of Fair info.")}
+        ${item('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="4" width="13" height="10" rx="2"/><rect x="15" y="9" width="6" height="11" rx="1.5"/><path d="M6 18h7"/></svg>', STANDALONE ? "Your plan, kept on your phone" : "Your plan on every device", STANDALONE ? "Starred booths, priorities, notes and ticks stay in this browser. To use them on another device, use “Move my plan” at the bottom of My plan." : "Starred booths, priorities, notes and ticks are saved to your Claude account when you are signed in.")}
       </ul>
       <button class="btn primary" data-close style="width:100%;margin-top:6px">Start planning</button>`, false, true);
   }
